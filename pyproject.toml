@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "research-kb"
+version = "0.1.0"
+description = "Local-first Zotero and Obsidian literature management tooling"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Nils T. Mucke" },
+]
+dependencies = [
+  "httpx>=0.28",
+  "pydantic>=2.0",
+  "pydantic-settings>=2.0",
+  "python-frontmatter>=1.1",
+  "PyYAML>=6.0",
+  "PyMuPDF>=1.26",
+  "typer>=0.16",
+  "rich>=14.0",
+]
+
+[project.scripts]
+research = "research_kb.cli:app"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.17",
+  "pytest>=8.0",
+  "pytest-cov>=6.0",
+  "respx>=0.22",
+  "ruff>=0.12",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/research_kb"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["research_kb"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["research_kb"]

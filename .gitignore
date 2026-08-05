@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+dist/
+build/
+
+# Local configuration and credentials
+.env
+.research/credentials.json
+
+# Rebuildable research state
+.research/paper-text/*
+!.research/paper-text/.gitkeep
+.research/backups/*
+!.research/backups/.gitkeep
+.research/logs/*
+!.research/logs/.gitkeep
+.research/sync-state.json
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+
+# PDF inspection scratch output
+tmp/
