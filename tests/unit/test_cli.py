@@ -1,5 +1,6 @@
 """Tests for the CLI contract."""
 
+import re
 from pathlib import Path
 from typing import ClassVar, Self
 
@@ -192,11 +193,12 @@ def test_sync_help_lists_supported_options() -> None:
         terminal_width=120,
     )
 
+    output = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
     assert result.exit_code == 0
-    assert "--dry-run" in result.stdout
-    assert "--full" in result.stdout
-    assert "--item" in result.stdout
-    assert "--citekey" in result.stdout
+    assert "--dry-run" in output
+    assert "--full" in output
+    assert "--item" in output
+    assert "--citekey" in output
 
 
 @pytest.mark.parametrize(
