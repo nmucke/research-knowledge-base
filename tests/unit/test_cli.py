@@ -1,5 +1,6 @@
 """Tests for the CLI contract."""
 
+import re
 from pathlib import Path
 from typing import ClassVar, Self
 
@@ -11,8 +12,10 @@ from research_kb.better_bibtex import BetterBibTeXClient
 from research_kb.exceptions import (
     BetterBibTeXUnavailableError,
     CitationKeyMissingError,
+    SyncError,
     ZoteroUnavailableError,
 )
+from research_kb.sync_service import SyncAction, SyncItemResult, SyncReport
 from research_kb.zotero_client import ZoteroClient, ZoteroServerInfo
 
 app = cli.app
@@ -182,6 +185,143 @@ def test_show_reports_a_malformed_item_key_as_a_user_error(tmp_path: Path) -> No
     ]
 
 
+def test_sync_help_lists_supported_options() -> None:
+    result = runner.invoke(
+        app,
+        ["sync", "--help"],
+        color=False,
+        terminal_width=120,
+    )
+
+    output = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+    assert result.exit_code == 0
+    assert "--dry-run" in output
+    assert "--full" in output
+    assert "--item" in output
+    assert "--citekey" in output
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (
+            ["--item", "ABCD1234", "--citekey", "doe2026"],
+            "Error: --item and --citekey cannot be used together.",
+        ),
+        (
+            ["--full", "--item", "ABCD1234"],
+            "Error: --full cannot be used with --item or --citekey.",
+        ),
+    ],
+)
+def test_sync_rejects_incompatible_flags_before_opening_clients(
+    tmp_path: Path,
+    arguments: list[str],
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "ZoteroClient", _UnexpectedSyncClient)
+    monkeypatch.setattr(cli, "BetterBibTeXClient", _UnexpectedSyncClient)
+
+    result = runner.invoke(app, ["sync", *arguments], env={"RESEARCH_VAULT_PATH": str(tmp_path)})
+
+    assert result.exit_code == 1
+    assert result.stderr.splitlines() == [expected]
+
+
+def test_sync_passes_flags_to_service_and_renders_dry_run_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _SyncServiceFake.reset(
+        SyncReport(
+            mode="full",
+            dry_run=True,
+            previous_version=None,
+            library_version=12,
+            state_updated=False,
+            fallback_reason="incremental-read-failed",
+            items=(
+                SyncItemResult(SyncAction.RENAMED, "BBBB2222", "new", Path("new.md"), "old"),
+                SyncItemResult(SyncAction.CREATED, "AAAA1111", "first", Path("first.md")),
+            ),
+        )
+    )
+    _SyncClient.reset()
+    monkeypatch.setattr(cli, "ZoteroClient", _SyncClient)
+    monkeypatch.setattr(cli, "BetterBibTeXClient", _SyncClient)
+    monkeypatch.setattr(cli, "SyncService", _SyncServiceFake)
+
+    result = runner.invoke(
+        app,
+        ["sync", "--dry-run", "--citekey", "first"],
+        env={"RESEARCH_VAULT_PATH": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout.splitlines() == [
+        "DRY-RUN CREATE AAAA1111 first",
+        "DRY-RUN RENAME BBBB2222 old -> new",
+        (
+            "Summary: mode=full, count=2, version=12, "
+            "incremental-fallback=yes (incremental-read-failed)"
+        ),
+    ]
+    assert _SyncServiceFake.run_calls == [(True, False, None, "first")]
+    assert _SyncClient.closed == 2
+    log_text = (tmp_path / ".research" / "logs" / "research.log").read_text(encoding="utf-8")
+    assert "sync_item action=created zotero_key=AAAA1111 citekey=first path=first.md" in log_text
+    assert "sync_item action=renamed zotero_key=BBBB2222 citekey=new path=new.md" in log_text
+    assert (
+        "sync_complete mode=full dry_run=True previous_version=None "
+        "library_version=12 state_updated=False"
+    ) in log_text
+
+
+def test_sync_reports_targeted_cursor_as_not_applicable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _SyncServiceFake.reset(
+        SyncReport(
+            mode="targeted",
+            dry_run=False,
+            previous_version=None,
+            library_version=None,
+            state_updated=False,
+            items=(),
+        )
+    )
+    monkeypatch.setattr(cli, "ZoteroClient", _SyncClient)
+    monkeypatch.setattr(cli, "BetterBibTeXClient", _SyncClient)
+    monkeypatch.setattr(cli, "SyncService", _SyncServiceFake)
+
+    result = runner.invoke(
+        app,
+        ["sync", "--item", "ABCD1234"],
+        env={"RESEARCH_VAULT_PATH": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout.splitlines() == [
+        "Summary: mode=targeted, count=0, version=n/a, incremental-fallback=no"
+    ]
+
+
+def test_sync_reports_domain_error_and_closes_clients(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _SyncServiceFake.reset(SyncError("Zotero is unavailable."))
+    _SyncClient.reset()
+    monkeypatch.setattr(cli, "ZoteroClient", _SyncClient)
+    monkeypatch.setattr(cli, "BetterBibTeXClient", _SyncClient)
+    monkeypatch.setattr(cli, "SyncService", _SyncServiceFake)
+
+    result = runner.invoke(app, ["sync"], env={"RESEARCH_VAULT_PATH": str(tmp_path)})
+
+    assert result.exit_code == 1
+    assert result.stderr.splitlines() == ["Error: Zotero is unavailable."]
+    assert _SyncClient.closed == 2
+
+
 class SuccessfulZoteroClient(ZoteroClient):
     def __init__(self, base_url: str) -> None:
         del base_url
@@ -291,6 +431,55 @@ class ShowBetterBibTeXClient:
         if error is not None:
             raise error
         return "Doe2026Useful"
+
+
+class _UnexpectedSyncClient:
+    def __init__(self, _: str) -> None:
+        raise AssertionError("sync opened a client before validating flags")
+
+
+class _SyncClient:
+    closed: ClassVar[int] = 0
+
+    def __init__(self, _: str) -> None:
+        pass
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.closed = 0
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        type(self).closed += 1
+
+
+class _SyncServiceFake:
+    report: ClassVar[SyncReport | SyncError]
+    run_calls: ClassVar[list[tuple[bool, bool, str | None, str | None]]] = []
+
+    def __init__(self, *_: object) -> None:
+        pass
+
+    @classmethod
+    def reset(cls, report: SyncReport | SyncError) -> None:
+        cls.report = report
+        cls.run_calls = []
+
+    def run(
+        self,
+        *,
+        dry_run: bool = False,
+        full: bool = False,
+        item_key: str | None = None,
+        citekey: str | None = None,
+    ) -> SyncReport:
+        type(self).run_calls.append((dry_run, full, item_key, citekey))
+        report = type(self).report
+        if isinstance(report, SyncError):
+            raise report
+        return report
 
 
 def _create_required_vault_paths(vault_path: Path) -> None:

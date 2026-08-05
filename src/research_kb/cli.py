@@ -12,6 +12,8 @@ from research_kb.config import Settings
 from research_kb.doctor_service import CheckStatus, DoctorService
 from research_kb.exceptions import ResearchKBError
 from research_kb.logging_config import LOGGER_NAME, configure_logging
+from research_kb.markdown_store import MarkdownStore
+from research_kb.sync_service import SyncAction, SyncReport, SyncService
 from research_kb.zotero_client import ZoteroClient
 
 app = typer.Typer(
@@ -139,6 +141,104 @@ def show(
     )
     for label, value in fields:
         console.print(f"{label}: {value or '-'}", markup=False)
+
+
+@app.command()
+def sync(
+    ctx: typer.Context,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Report changes without writing them.")
+    ] = False,
+    full: Annotated[
+        bool, typer.Option("--full", help="Ignore the saved incremental-sync cursor.")
+    ] = False,
+    item: Annotated[
+        str | None, typer.Option("--item", help="Synchronize one Zotero item key.")
+    ] = None,
+    citekey: Annotated[
+        str | None, typer.Option("--citekey", help="Synchronize the note with this citation key.")
+    ] = None,
+) -> None:
+    """Synchronize Zotero metadata into paper notes."""
+    logger = logging.getLogger(LOGGER_NAME)
+    if item is not None and citekey is not None:
+        _sync_error(logger, "--item and --citekey cannot be used together.")
+    if full and (item is not None or citekey is not None):
+        _sync_error(logger, "--full cannot be used with --item or --citekey.")
+
+    settings = cast(Settings, ctx.obj["settings"])
+    try:
+        with (
+            ZoteroClient(settings.zotero_local_api) as zotero_client,
+            BetterBibTeXClient(settings.better_bibtex_rpc) as better_bibtex_client,
+        ):
+            report = SyncService(
+                settings,
+                zotero_client,
+                better_bibtex_client,
+                MarkdownStore(settings.papers_dir),
+            ).run(dry_run=dry_run, full=full, item_key=item, citekey=citekey)
+    except ResearchKBError as error:
+        logger.error("sync_failed error=%s", error)
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    _log_sync_report(logger, report)
+    _print_sync_report(report)
+
+
+def _sync_error(logger: logging.Logger, message: str) -> None:
+    """Emit one consistent CLI error before constructing service clients."""
+    logger.error("sync_failed error=%s", message)
+    typer.echo(f"Error: {message}", err=True)
+    raise typer.Exit(code=1)
+
+
+def _log_sync_report(logger: logging.Logger, report: SyncReport) -> None:
+    """Record machine-searchable details without changing terminal output."""
+    for item in sorted(report.items, key=lambda result: (result.zotero_key, result.citekey)):
+        logger.info(
+            "sync_item action=%s zotero_key=%s citekey=%s path=%s",
+            item.action,
+            item.zotero_key,
+            item.citekey,
+            item.path,
+        )
+    logger.info(
+        "sync_complete mode=%s dry_run=%s previous_version=%s library_version=%s "
+        "state_updated=%s",
+        report.mode,
+        report.dry_run,
+        report.previous_version,
+        report.library_version,
+        report.state_updated,
+    )
+
+
+def _print_sync_report(report: SyncReport) -> None:
+    """Render a stable, intentionally metadata-only sync summary."""
+    labels = {
+        SyncAction.CREATED: "CREATE",
+        SyncAction.UPDATED: "UPDATE",
+        SyncAction.RENAMED: "RENAME",
+        SyncAction.UNCHANGED: "UNCHANGED",
+        SyncAction.MISSING: "MISSING",
+    }
+    prefix = "DRY-RUN " if report.dry_run else ""
+    for item in sorted(report.items, key=lambda result: (result.zotero_key, result.citekey)):
+        detail = item.citekey
+        if item.action is SyncAction.RENAMED and item.previous_citekey is not None:
+            detail = f"{item.previous_citekey} -> {item.citekey}"
+        typer.echo(f"{prefix}{labels[item.action]} {item.zotero_key} {detail}")
+
+    fallback = "no"
+    if report.fallback_reason is not None:
+        fallback = f"yes ({report.fallback_reason})"
+    version = "n/a" if report.library_version is None else str(report.library_version)
+    typer.echo(
+        f"Summary: mode={report.mode}, count={len(report.items)}, "
+        f"version={version}, incremental-fallback={fallback}"
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
