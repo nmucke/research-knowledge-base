@@ -53,3 +53,12 @@ def test_invalid_service_url_is_rejected(tmp_path: Path) -> None:
             research_vault_path=tmp_path,
             zotero_local_api="not-a-url",
         )
+
+
+def test_non_loopback_local_service_url_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="loopback host"):
+        Settings(
+            _env_file=None,
+            research_vault_path=tmp_path,
+            zotero_local_api="https://example.com/api",
+        )

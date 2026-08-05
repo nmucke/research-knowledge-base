@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 LibraryType = Literal["user", "group"]
 HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]", "::1"})
 
 
 class Settings(BaseSettings):
@@ -34,7 +35,10 @@ class Settings(BaseSettings):
     @classmethod
     def validate_service_url(cls, value: object) -> str:
         """Validate HTTP endpoints while exposing strings compatible with httpx."""
-        return str(HTTP_URL_ADAPTER.validate_python(value)).rstrip("/")
+        url = HTTP_URL_ADAPTER.validate_python(value)
+        if url.host not in LOOPBACK_HOSTS:
+            raise ValueError("local service URLs must use a loopback host")
+        return str(url).rstrip("/")
 
     @field_validator("research_log_level", mode="before")
     @classmethod
