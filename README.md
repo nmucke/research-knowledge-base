@@ -31,7 +31,7 @@ anything containing Zotero credentials.
 
 ## Diagnostics
 
-Implementation steps 1 through 4 are complete. Run the local environment checks
+Implementation steps 1 through 7 are complete. Run the local environment checks
 with:
 
 ```sh
@@ -51,4 +51,19 @@ Display the Zotero metadata and Better BibTeX citation key for a local item:
 uv run research show --zotero-key ABCD1234
 ```
 
-PDF resolution and synchronization are not part of the implemented workflow.
+## Synchronize notes
+
+Import Zotero changes into paper notes with:
+
+```sh
+uv run research sync
+```
+
+Use `--dry-run` to preview changes, `--full` to ignore the saved cursor, or
+target one item with `--item ABCD1234` or `--citekey chen2025flowdas`.
+Normal runs use the cursor in `.research/sync-state.json` to fetch only changed
+items. If that incremental request cannot be used (including when Zotero's
+server identity changes), the command automatically falls back to a full sync
+and reports that choice. Sync updates only Zotero-owned metadata and preserves
+your human notes. Use `--full` after permanently emptying Zotero's trash when
+the installed local API does not expose its deletion log.

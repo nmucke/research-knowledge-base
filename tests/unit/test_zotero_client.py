@@ -106,9 +106,7 @@ def test_discover_converts_bad_http_status() -> None:
         ),
     ],
 )
-def test_discover_rejects_missing_or_invalid_headers(
-    headers: dict[str, str], message: str
-) -> None:
+def test_discover_rejects_missing_or_invalid_headers(headers: dict[str, str], message: str) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, headers=headers, request=request)
 
@@ -152,6 +150,12 @@ def _item_payload() -> dict[str, object]:
             "url": "https://example.test/paper",
             "abstractNote": "An abstract.",
             "tags": [{"tag": "physics"}, {"tag": "methods"}],
+            "volume": "42",
+            "issue": "7",
+            "pages": "100-120",
+            "collections": ["COLLECT01"],
+            "dateAdded": "2026-08-05T10:00:00Z",
+            "dateModified": "2026-08-06T10:00:00Z",
         },
     }
 
@@ -173,6 +177,12 @@ def test_get_item_requests_expected_path_and_parses_real_item_payload() -> None:
     assert item.library_id == 42
     assert item.publication == "Journal of Examples"
     assert item.tags == ("physics", "methods")
+    assert item.volume == "42"
+    assert item.issue == "7"
+    assert item.pages == "100-120"
+    assert item.collections == ("COLLECT01",)
+    assert item.date_added == "2026-08-05T10:00:00Z"
+    assert item.date_modified == "2026-08-06T10:00:00Z"
     assert item.creators[1].display_name == "CERN"
     assert item.authors[0].display_name == "Ada Lovelace"
 
@@ -315,4 +325,233 @@ def test_supported_item_types_are_the_documented_set() -> None:
         "thesis",
         "report",
         "document",
+    }
+
+
+def test_list_items_paginates_and_filters_non_paper_objects() -> None:
+    requests: list[httpx.Request] = []
+    unsupported = _item_payload()
+    unsupported_data = unsupported["data"]
+    assert isinstance(unsupported_data, dict)
+    unsupported_data["itemType"] = "attachment"
+    child = _item_payload()
+    child_data = child["data"]
+    assert isinstance(child_data, dict)
+    child_data["parentItem"] = "PARENT01"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/deleted"):
+            return httpx.Response(
+                200,
+                json={"items": ["DELETED1"]},
+                headers={"Last-Modified-Version": "18"},
+                request=request,
+            )
+        if request.url.params.get("start") == "0":
+            return httpx.Response(
+                200,
+                json=[_item_payload(), unsupported, child],
+                headers={
+                    "Last-Modified-Version": "18",
+                    "Link": (
+                        "<http://zotero.test/api/users/0/items/top?"
+                        'limit=100&start=100&since=0>; rel="next"'
+                    ),
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json=[],
+            headers={"Last-Modified-Version": "18"},
+            request=request,
+        )
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        batch = client.list_items("user", 0, since=0)
+
+    assert [item.key for item in batch.items] == ["ABCDE123"]
+    assert batch.removed_item_keys == ("DELETED1",)
+    assert batch.library_version == 18
+    assert requests[0].url.path == "/api/users/0/items/top"
+    assert dict(requests[0].url.params) == {
+        "limit": "100",
+        "start": "0",
+        "since": "0",
+        "includeTrashed": "1",
+    }
+    assert dict(requests[1].url.params)["start"] == "100"
+    assert requests[2].url.path == "/api/users/0/deleted"
+    assert dict(requests[2].url.params) == {"since": "0"}
+
+
+@pytest.mark.parametrize("header", [None, "not-a-number", "-1"])
+def test_list_items_rejects_invalid_library_version_headers(header: str | None) -> None:
+    headers = {} if header is None else {"Last-Modified-Version": header}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[], headers=headers, request=request)
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ZoteroInvalidResponseError, match="Last-Modified-Version"):
+            client.list_items()
+
+
+def test_list_items_unions_trashed_and_deleted_item_keys() -> None:
+    trashed = _item_payload()
+    trashed_data = trashed["data"]
+    assert isinstance(trashed_data, dict)
+    trashed_data["deleted"] = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/items/top"):
+            return httpx.Response(
+                200,
+                json=[trashed],
+                headers={"Last-Modified-Version": "20"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={"items": ["ABCDE123", "ZXCVB123"]},
+            headers={"Last-Modified-Version": "20"},
+            request=request,
+        )
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        batch = client.list_items(since=4)
+
+    assert batch.items == ()
+    assert batch.removed_item_keys == ("ABCDE123", "ZXCVB123")
+
+
+def test_list_items_full_read_does_not_request_deleted_endpoint() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=[],
+            headers={"Last-Modified-Version": "20"},
+            request=request,
+        )
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        client.list_items()
+
+    assert [request.url.path for request in requests] == ["/api/users/0/items/top"]
+
+
+def test_list_items_allows_local_api_without_deleted_endpoint() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/deleted"):
+            return httpx.Response(404, request=request)
+        return httpx.Response(
+            200,
+            json=[],
+            headers={"Last-Modified-Version": "20"},
+            request=request,
+        )
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        batch = client.list_items(since=4)
+
+    assert batch.library_version == 20
+    assert batch.items == ()
+    assert batch.removed_item_keys == ()
+
+
+@pytest.mark.parametrize(
+    ("payload", "version"),
+    [
+        ({"items": ["bad-key"]}, "20"),
+        ({"items": "ABCDE123"}, "20"),
+        ([], "20"),
+        ({"items": []}, "21"),
+    ],
+)
+def test_list_items_rejects_invalid_or_inconsistent_deleted_response(
+    payload: object, version: str
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/items/top"):
+            return httpx.Response(
+                200,
+                json=[],
+                headers={"Last-Modified-Version": "20"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json=payload,
+            headers={"Last-Modified-Version": version},
+            request=request,
+        )
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ZoteroInvalidResponseError):
+            client.list_items(since=1)
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        '<https://elsewhere.test/items/top?start=100>; rel="next"',
+        '<http://zotero.test/api/users/0/items/top?start=0>; rel="next"',
+        '<http://zotero.test/api/users/0/items/top?start=not-a-number>; rel="next"',
+    ],
+)
+def test_list_items_rejects_unsafe_or_looping_pagination_links(link: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[],
+            headers={"Last-Modified-Version": "20", "Link": link},
+            request=request,
+        )
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ZoteroInvalidResponseError, match="pagination Link"):
+            client.list_items()
+
+
+def test_list_items_preserves_cursor_when_the_next_link_drops_it() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.params.get("start") == "0":
+            return httpx.Response(
+                200,
+                json=[],
+                headers={
+                    "Last-Modified-Version": "20",
+                    "Link": '<http://zotero.test/api/users/0/items/top?start=100>; rel="next"',
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/deleted"):
+            return httpx.Response(
+                200,
+                json={"items": []},
+                headers={"Last-Modified-Version": "20"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json=[],
+            headers={"Last-Modified-Version": "20"},
+            request=request,
+        )
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        client.list_items(since=3)
+
+    assert dict(requests[1].url.params) == {
+        "limit": "100",
+        "start": "100",
+        "since": "3",
+        "includeTrashed": "1",
     }

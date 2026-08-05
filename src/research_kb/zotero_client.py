@@ -3,7 +3,9 @@
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Self, cast
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
@@ -14,7 +16,7 @@ from research_kb.exceptions import (
     ZoteroUnavailableError,
     ZoteroUnsupportedItemError,
 )
-from research_kb.models import ZoteroCreator, ZoteroItem
+from research_kb.models import ZoteroCreator, ZoteroItem, ZoteroItemBatch
 
 SUPPORTED_ITEM_TYPES = frozenset(
     {
@@ -123,6 +125,88 @@ class ZoteroClient:
             ) from error
         return self._parse_item(payload)
 
+    def list_items(
+        self,
+        library_type: str = "user",
+        library_id: int = 0,
+        *,
+        since: int | None = None,
+    ) -> ZoteroItemBatch:
+        """List supported top-level items, following Zotero's pagination links."""
+        self._validate_library_reference(library_type, library_id)
+        if since is not None and (
+            isinstance(since, bool) or not isinstance(since, int) or since < 0
+        ):
+            raise ZoteroInvalidItemReferenceError(
+                "Zotero since version must be a non-negative integer."
+            )
+
+        params: dict[str, int] = {"limit": 100, "start": 0}
+        if since is not None:
+            params["since"] = since
+            params["includeTrashed"] = 1
+        endpoint = f"{library_type}s/{library_id}/items/top"
+        expected_url = self._client.build_request("GET", endpoint).url
+        next_start: int | None = 0
+        items: list[ZoteroItem] = []
+        removed_item_keys: set[str] = set()
+        library_version: int | None = None
+
+        while next_start is not None:
+            params["start"] = next_start
+            try:
+                response = self._client.get(endpoint, params=params)
+                response.raise_for_status()
+            except httpx.HTTPError as error:
+                raise ZoteroUnavailableError(
+                    f"Could not list Zotero items: {error}. "
+                    "Is Zotero running and its local API enabled?"
+                ) from error
+
+            response_version = self._last_modified_version(response)
+            if library_version is None:
+                library_version = response_version
+            elif response_version != library_version:
+                raise ZoteroInvalidResponseError(
+                    "Zotero returned inconsistent Last-Modified-Version headers."
+                )
+            try:
+                payload: object = response.json()
+            except ValueError as error:
+                raise ZoteroInvalidResponseError(
+                    "Zotero returned invalid JSON while listing items."
+                ) from error
+            raw_items = self._list(payload, "items")
+            for raw_item in raw_items:
+                item, removed_key = self._classify_batch_item(raw_item)
+                if item is not None:
+                    items.append(item)
+                if removed_key is not None:
+                    removed_item_keys.add(removed_key)
+
+            next_link = response.links.get("next")
+            if next_link is None:
+                next_start = None
+            else:
+                next_url = next_link.get("url")
+                if not isinstance(next_url, str):
+                    raise ZoteroInvalidResponseError(
+                        "Zotero response has an invalid pagination Link."
+                    )
+                next_start = self._next_start(next_url, response.url, expected_url, next_start)
+
+        # A successful Zotero response always has the required version header.
+        assert library_version is not None
+        if since is not None:
+            removed_item_keys.update(
+                self._list_removed_item_keys(library_type, library_id, since, library_version)
+            )
+        return ZoteroItemBatch(
+            items=tuple(items),
+            library_version=library_version,
+            removed_item_keys=tuple(sorted(removed_item_keys)),
+        )
+
     @classmethod
     def _parse_item(cls, payload: object) -> ZoteroItem:
         item = cls._mapping(payload, "item")
@@ -158,7 +242,101 @@ class ZoteroClient:
             url=cls._optional_string(data, "url", "item.data"),
             abstract=cls._optional_string(data, "abstractNote", "item.data"),
             tags=cls._tags(data.get("tags")),
+            volume=cls._optional_string(data, "volume", "item.data"),
+            issue=cls._optional_string(data, "issue", "item.data"),
+            pages=cls._optional_string(data, "pages", "item.data"),
+            collections=cls._collections(data.get("collections")),
+            date_added=cls._optional_timestamp(data, "dateAdded", "item.data"),
+            date_modified=cls._optional_timestamp(data, "dateModified", "item.data"),
         )
+
+    @classmethod
+    def _classify_batch_item(cls, payload: object) -> tuple[ZoteroItem | None, str | None]:
+        """Identify valid objects that are intentionally outside paper syncing."""
+        item = cls._mapping(payload, "item")
+        data = cls._mapping(item.get("data"), "item.data")
+        item_type = cls._required_string(data, "itemType", "item.data")
+        if item_type not in SUPPORTED_ITEM_TYPES:
+            return None, None
+        parent_item = data.get("parentItem")
+        if parent_item is not None and not isinstance(parent_item, str):
+            raise ZoteroInvalidResponseError("Zotero response has invalid item.data.parentItem.")
+        if parent_item:
+            return None, None
+        library = cls._mapping(item.get("library"), "item.library")
+        if cls._optional_string(library, "type", "item.library") == "feed":
+            return None, None
+        deleted = data.get("deleted")
+        if deleted is not None and not isinstance(deleted, bool):
+            raise ZoteroInvalidResponseError("Zotero response has invalid item.data.deleted.")
+        if deleted:
+            return None, cls._response_item_key(item)
+        return cls._parse_item(item), None
+
+    def _list_removed_item_keys(
+        self, library_type: str, library_id: int, since: int, expected_version: int
+    ) -> tuple[str, ...]:
+        """Read tombstones Zotero does not include in the normal item listing."""
+        path = f"{library_type}s/{library_id}/deleted"
+        try:
+            response = self._client.get(path, params={"since": since})
+            # Zotero's local API supports ``since`` and ``includeTrashed`` on
+            # item reads, but some releases do not expose the Web API's
+            # deletion-log endpoint. Trashed items are still reported by the
+            # main incremental read; an explicit full sync reconciles items
+            # permanently erased before they could be observed in the trash.
+            if response.status_code == httpx.codes.NOT_FOUND:
+                return ()
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise ZoteroUnavailableError(
+                f"Could not list deleted Zotero items: {error}. "
+                "Is Zotero running and its local API enabled?"
+            ) from error
+        if self._last_modified_version(response) != expected_version:
+            raise ZoteroInvalidResponseError(
+                "Zotero returned inconsistent Last-Modified-Version headers."
+            )
+        try:
+            payload: object = response.json()
+        except ValueError as error:
+            raise ZoteroInvalidResponseError(
+                "Zotero returned invalid JSON while listing deleted items."
+            ) from error
+        deleted = self._mapping(payload, "deleted items")
+        raw_keys = self._list(deleted.get("items"), "deleted items.items")
+        keys: list[str] = []
+        for raw_key in raw_keys:
+            if not isinstance(raw_key, str) or not _ITEM_KEY_PATTERN.fullmatch(raw_key):
+                raise ZoteroInvalidResponseError(
+                    "Zotero response has invalid deleted items.items entry."
+                )
+            keys.append(raw_key)
+        return tuple(keys)
+
+    @staticmethod
+    def _next_start(
+        link: str, response_url: httpx.URL, expected_url: httpx.URL, current_start: int
+    ) -> int:
+        """Accept only a same-endpoint Link cursor and regenerate its parameters locally."""
+        resolved = response_url.join(link)
+        if (
+            resolved.scheme != expected_url.scheme
+            or resolved.host != expected_url.host
+            or resolved.port != expected_url.port
+            or resolved.path != expected_url.path
+        ):
+            raise ZoteroInvalidResponseError("Zotero response has an invalid pagination Link.")
+        parsed = urlsplit(str(resolved))
+        starts = parse_qs(parsed.query, keep_blank_values=True).get("start", [])
+        if len(starts) != 1 or not starts[0].isdigit():
+            raise ZoteroInvalidResponseError("Zotero response has an invalid pagination Link.")
+        start = int(starts[0])
+        if start <= current_start:
+            raise ZoteroInvalidResponseError(
+                "Zotero response has a non-increasing pagination Link."
+            )
+        return start
 
     @classmethod
     def _creators(cls, value: object) -> tuple[ZoteroCreator, ...]:
@@ -191,6 +369,16 @@ class ZoteroClient:
         return tuple(
             cls._required_string(cls._mapping(tag, "item.data.tags entry"), "tag", "tag")
             for tag in tags
+        )
+
+    @classmethod
+    def _collections(cls, value: object) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        collections = cls._list(value, "item.data.collections")
+        return tuple(
+            cls._required_string({"collection": collection}, "collection", "item.data.collections")
+            for collection in collections
         )
 
     @classmethod
@@ -235,6 +423,24 @@ class ZoteroClient:
             raise ZoteroInvalidResponseError(f"Zotero response has invalid {location}.{field}.")
         return value.strip() or None
 
+    @classmethod
+    def _optional_timestamp(
+        cls, data: Mapping[str, object], field: str, location: str
+    ) -> str | None:
+        value = cls._optional_string(data, field, location)
+        if value is None:
+            return None
+        try:
+            if "T" in value:
+                datetime.fromisoformat(value.replace("Z", "+00:00"))
+            else:
+                date.fromisoformat(value)
+        except ValueError:
+            raise ZoteroInvalidResponseError(
+                f"Zotero response has invalid {location}.{field}."
+            ) from None
+        return value
+
     @staticmethod
     def _required_integer(data: Mapping[str, object], field: str, location: str) -> int:
         value = data.get(field)
@@ -255,14 +461,35 @@ class ZoteroClient:
             raise ZoteroInvalidItemReferenceError(
                 "Zotero item keys must contain exactly 8 uppercase letters or digits."
             )
+        ZoteroClient._validate_library_reference(library_type, library_id)
+
+    @staticmethod
+    def _validate_library_reference(library_type: str, library_id: int) -> None:
         if library_type not in {"user", "group"}:
-            raise ZoteroInvalidItemReferenceError(
-                "Zotero library type must be 'user' or 'group'."
-            )
+            raise ZoteroInvalidItemReferenceError("Zotero library type must be 'user' or 'group'.")
         if isinstance(library_id, bool) or not isinstance(library_id, int) or library_id < 0:
             raise ZoteroInvalidItemReferenceError(
                 "Zotero library ID must be a non-negative integer."
             )
+
+    @staticmethod
+    def _last_modified_version(response: httpx.Response) -> int:
+        value = response.headers.get("Last-Modified-Version")
+        if value is None:
+            raise ZoteroInvalidResponseError(
+                "Zotero API response is missing required header Last-Modified-Version."
+            )
+        try:
+            version = int(value)
+        except ValueError:
+            raise ZoteroInvalidResponseError(
+                "Zotero API response has invalid Last-Modified-Version header."
+            ) from None
+        if version < 0:
+            raise ZoteroInvalidResponseError(
+                "Zotero API response has invalid Last-Modified-Version header."
+            )
+        return version
 
     @staticmethod
     def _integer_header(response: httpx.Response, name: str) -> int:

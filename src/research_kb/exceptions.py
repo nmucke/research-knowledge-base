@@ -59,3 +59,11 @@ class ManagedBlockError(ResearchKBError):
 
 class ValidationError(ResearchKBError):
     """Raised when vault or note validation fails."""
+
+
+class SyncError(ResearchKBError):
+    """Raised when a requested synchronisation cannot be performed safely."""
+
+
+class SyncConflictError(SyncError):
+    """Raised when two paper notes claim the same Zotero identity."""
