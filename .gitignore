@@ -31,3 +31,6 @@ build/
 
 # PDF inspection scratch output
 tmp/
+
+# Paper notes
+Literature/papers/
