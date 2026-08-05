@@ -1,15 +1,18 @@
 """Tests for the CLI contract."""
 
 from pathlib import Path
-from types import TracebackType
-from typing import Self
+from typing import ClassVar, Self
 
 import pytest
 from typer.testing import CliRunner
 
 import research_kb.cli as cli
 from research_kb.better_bibtex import BetterBibTeXClient
-from research_kb.exceptions import BetterBibTeXUnavailableError, ZoteroUnavailableError
+from research_kb.exceptions import (
+    BetterBibTeXUnavailableError,
+    CitationKeyMissingError,
+    ZoteroUnavailableError,
+)
 from research_kb.zotero_client import ZoteroClient, ZoteroServerInfo
 
 app = cli.app
@@ -23,6 +26,7 @@ def test_help_starts_successfully() -> None:
     assert result.exit_code == 0
     assert "Manage the local Zotero-Obsidian literature workflow" in result.stdout
     assert "doctor" in result.stdout
+    assert "show" in result.stdout
 
 
 def test_version_starts_successfully() -> None:
@@ -80,6 +84,104 @@ def test_doctor_reports_all_service_failures(
     assert "PASS Vault paths" in output
 
 
+def test_show_prints_item_metadata_and_uses_configured_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ShowZoteroClient.reset()
+    ShowBetterBibTeXClient.reset()
+    monkeypatch.setattr(cli, "ZoteroClient", ShowZoteroClient)
+    monkeypatch.setattr(cli, "BetterBibTeXClient", ShowBetterBibTeXClient)
+
+    result = runner.invoke(
+        app,
+        ["show", "--zotero-key", "ABCD1234"],
+        env={
+            "RESEARCH_VAULT_PATH": str(tmp_path),
+            "ZOTERO_LIBRARY_TYPE": "group",
+            "ZOTERO_LIBRARY_ID": "42",
+        },
+    )
+
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        "Title: A [useful] paper",
+        "Zotero key: ABCD1234",
+        "Citation key: Doe2026Useful",
+        "Item type: journalArticle",
+        "Version: 7",
+        "Authors: Jane Doe, John Smith",
+        "Date: 2026-01-15",
+        "Publication: Journal of Useful Results",
+        "DOI: -",
+        "URL: -",
+    ]
+    assert ShowZoteroClient.get_item_calls == [("ABCD1234", "group", 42)]
+    assert ShowBetterBibTeXClient.get_citation_key_calls == [("ABCD1234", 42)]
+    assert ShowZoteroClient.closed is True
+    assert ShowBetterBibTeXClient.closed is True
+
+
+def test_show_stops_before_better_bibtex_when_item_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ShowZoteroClient.reset()
+    ShowBetterBibTeXClient.reset()
+    ShowZoteroClient.get_item_error = ZoteroUnavailableError("Start Zotero and try again.")
+    monkeypatch.setattr(cli, "ZoteroClient", ShowZoteroClient)
+    monkeypatch.setattr(cli, "BetterBibTeXClient", ShowBetterBibTeXClient)
+
+    result = runner.invoke(
+        app,
+        ["show", "--zotero-key", "ABCD1234"],
+        env={"RESEARCH_VAULT_PATH": str(tmp_path)},
+    )
+
+    assert result.exit_code == 1
+    assert result.stderr.splitlines() == ["Error: Start Zotero and try again."]
+    assert ShowBetterBibTeXClient.get_citation_key_calls == []
+    assert ShowZoteroClient.closed is True
+    assert ShowBetterBibTeXClient.closed is True
+
+
+def test_show_reports_citation_key_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ShowZoteroClient.reset()
+    ShowBetterBibTeXClient.reset()
+    ShowBetterBibTeXClient.get_citation_key_error = CitationKeyMissingError(
+        "Generate a citation key in Better BibTeX and try again."
+    )
+    monkeypatch.setattr(cli, "ZoteroClient", ShowZoteroClient)
+    monkeypatch.setattr(cli, "BetterBibTeXClient", ShowBetterBibTeXClient)
+
+    result = runner.invoke(
+        app,
+        ["show", "--zotero-key", "ABCD1234"],
+        env={"RESEARCH_VAULT_PATH": str(tmp_path)},
+    )
+
+    assert result.exit_code == 1
+    assert result.stderr.splitlines() == [
+        "Error: Generate a citation key in Better BibTeX and try again."
+    ]
+    assert ShowBetterBibTeXClient.get_citation_key_calls == [("ABCD1234", 0)]
+    assert ShowZoteroClient.closed is True
+    assert ShowBetterBibTeXClient.closed is True
+
+
+def test_show_reports_a_malformed_item_key_as_a_user_error(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["show", "--zotero-key", "not/a/key"],
+        env={"RESEARCH_VAULT_PATH": str(tmp_path)},
+    )
+
+    assert result.exit_code == 1
+    assert result.stderr.splitlines() == [
+        "Error: Zotero item keys must contain exactly 8 uppercase letters or digits."
+    ]
+
+
 class SuccessfulZoteroClient(ZoteroClient):
     def __init__(self, base_url: str) -> None:
         del base_url
@@ -87,12 +189,7 @@ class SuccessfulZoteroClient(ZoteroClient):
     def __enter__(self) -> Self:
         return self
 
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
+    def __exit__(self, *_: object) -> None:
         return None
 
     def discover(self) -> ZoteroServerInfo:
@@ -106,12 +203,7 @@ class SuccessfulBetterBibTeXClient(BetterBibTeXClient):
     def __enter__(self) -> Self:
         return self
 
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
+    def __exit__(self, *_: object) -> None:
         return None
 
     def check_ready(self) -> None:
@@ -126,6 +218,79 @@ class FailingZoteroClient(SuccessfulZoteroClient):
 class FailingBetterBibTeXClient(SuccessfulBetterBibTeXClient):
     def check_ready(self) -> None:
         raise BetterBibTeXUnavailableError
+
+
+class ShowCreator:
+    def __init__(self, display_name: str) -> None:
+        self.display_name = display_name
+
+
+class ShowItem:
+    key = "ABCD1234"
+    version = 7
+    item_type = "journalArticle"
+    title = "A [useful] paper"
+    authors = (ShowCreator("Jane Doe"), ShowCreator("John Smith"))
+    date = "2026-01-15"
+    publication = "Journal of Useful Results"
+    doi = None
+    url = None
+
+
+class ShowZoteroClient:
+    get_item_calls: ClassVar[list[tuple[str, str, int]]] = []
+    get_item_error: ClassVar[ZoteroUnavailableError | None] = None
+    closed: ClassVar[bool] = False
+
+    def __init__(self, base_url: str) -> None:
+        del base_url
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.get_item_calls = []
+        cls.get_item_error = None
+        cls.closed = False
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        type(self).closed = True
+
+    def get_item(self, item_key: str, *, library_type: str, library_id: int) -> ShowItem:
+        type(self).get_item_calls.append((item_key, library_type, library_id))
+        error = type(self).get_item_error
+        if error is not None:
+            raise error
+        return ShowItem()
+
+
+class ShowBetterBibTeXClient:
+    get_citation_key_calls: ClassVar[list[tuple[str, int]]] = []
+    get_citation_key_error: ClassVar[CitationKeyMissingError | None] = None
+    closed: ClassVar[bool] = False
+
+    def __init__(self, rpc_url: str) -> None:
+        del rpc_url
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.get_citation_key_calls = []
+        cls.get_citation_key_error = None
+        cls.closed = False
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        type(self).closed = True
+
+    def get_citation_key(self, item_key: str, *, library_id: int) -> str:
+        type(self).get_citation_key_calls.append((item_key, library_id))
+        error = type(self).get_citation_key_error
+        if error is not None:
+            raise error
+        return "Doe2026Useful"
 
 
 def _create_required_vault_paths(vault_path: Path) -> None:

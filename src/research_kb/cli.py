@@ -10,6 +10,7 @@ from research_kb import __version__
 from research_kb.better_bibtex import BetterBibTeXClient
 from research_kb.config import Settings
 from research_kb.doctor_service import CheckStatus, DoctorService
+from research_kb.exceptions import ResearchKBError
 from research_kb.logging_config import LOGGER_NAME, configure_logging
 from research_kb.zotero_client import ZoteroClient
 
@@ -91,6 +92,53 @@ def doctor(ctx: typer.Context) -> None:
 
     if not report.ok:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def show(
+    ctx: typer.Context,
+    zotero_key: Annotated[
+        str,
+        typer.Option("--zotero-key", help="Zotero item key to display."),
+    ],
+) -> None:
+    """Display the metadata and citation key for one Zotero item."""
+    settings = cast(Settings, ctx.obj["settings"])
+    logger = logging.getLogger(LOGGER_NAME)
+
+    try:
+        with (
+            ZoteroClient(settings.zotero_local_api) as zotero_client,
+            BetterBibTeXClient(settings.better_bibtex_rpc) as better_bibtex_client,
+        ):
+            item = zotero_client.get_item(
+                zotero_key,
+                library_type=settings.zotero_library_type,
+                library_id=settings.zotero_library_id,
+            )
+            citation_key = better_bibtex_client.get_citation_key(
+                item.key,
+                library_id=settings.zotero_library_id,
+            )
+    except ResearchKBError as error:
+        logger.error("show_failed zotero_key=%s error=%s", zotero_key, error)
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    fields = (
+        ("Title", item.title),
+        ("Zotero key", item.key),
+        ("Citation key", citation_key),
+        ("Item type", item.item_type),
+        ("Version", str(item.version)),
+        ("Authors", ", ".join(author.display_name for author in item.authors)),
+        ("Date", item.date),
+        ("Publication", item.publication),
+        ("DOI", item.doi),
+        ("URL", item.url),
+    )
+    for label, value in fields:
+        console.print(f"{label}: {value or '-'}", markup=False)
 
 
 if __name__ == "__main__":  # pragma: no cover
