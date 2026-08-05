@@ -29,9 +29,16 @@ research --help
 Copy `.env.example` to `.env` for local overrides. Never commit `.env` or
 anything containing Zotero credentials.
 
-## Current implementation status
+## Diagnostics
 
-Implementation order is defined in section 30 of the specification. Step 1 is
-the repository and CLI skeleton. The `research doctor` command is registered as
-the boundary for step 2 and currently exits with an explicit not-implemented
-message.
+Implementation steps 1 and 2 are complete. Run the local environment checks
+with:
+
+```sh
+uv run research doctor
+```
+
+The command checks Zotero and Better BibTeX connectivity, required vault paths,
+`references.bib`, configuration, and local-write credential status. It runs all
+checks, exits non-zero when a required check fails, and treats optional setup as
+a warning.
