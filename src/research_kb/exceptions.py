@@ -9,6 +9,22 @@ class ZoteroUnavailableError(ResearchKBError):
     """Raised when the Zotero API cannot be reached."""
 
 
+class ZoteroItemNotFoundError(ResearchKBError):
+    """Raised when the requested Zotero item does not exist in the library."""
+
+
+class ZoteroInvalidItemReferenceError(ResearchKBError):
+    """Raised when a Zotero key or library reference is malformed."""
+
+
+class ZoteroUnsupportedItemError(ResearchKBError):
+    """Raised when a Zotero item cannot be treated as a bibliographic work."""
+
+
+class ZoteroInvalidResponseError(ResearchKBError):
+    """Raised when Zotero returns malformed item data."""
+
+
 class ZoteroAuthorizationError(ResearchKBError):
     """Raised when a Zotero write is not authorized."""
 
