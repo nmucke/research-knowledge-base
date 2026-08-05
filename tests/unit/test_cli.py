@@ -185,7 +185,12 @@ def test_show_reports_a_malformed_item_key_as_a_user_error(tmp_path: Path) -> No
 
 
 def test_sync_help_lists_supported_options() -> None:
-    result = runner.invoke(app, ["sync", "--help"])
+    result = runner.invoke(
+        app,
+        ["sync", "--help"],
+        color=False,
+        terminal_width=120,
+    )
 
     assert result.exit_code == 0
     assert "--dry-run" in result.stdout
