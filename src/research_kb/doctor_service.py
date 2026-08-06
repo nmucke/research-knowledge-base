@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Protocol
 
 from research_kb.config import Settings
-from research_kb.exceptions import BetterBibTeXUnavailableError, ZoteroUnavailableError
+from research_kb.credential_store import CredentialStore
+from research_kb.exceptions import (
+    BetterBibTeXUnavailableError,
+    CredentialStoreError,
+    ZoteroUnavailableError,
+)
 
 
 class CheckStatus(StrEnum):
@@ -75,6 +80,7 @@ class DoctorService:
         self._settings = settings
         self._zotero_client = zotero_client
         self._better_bibtex_client = better_bibtex_client
+        self._zotero_info: ZoteroServerInfoLike | None = None
 
     def run(self) -> DoctorReport:
         """Run all checks, retaining results even when earlier checks fail."""
@@ -104,6 +110,8 @@ class DoctorService:
                 CheckStatus.FAIL,
                 "Zotero discovery failed; verify the local API configuration and retry.",
             )
+
+        self._zotero_info = info
 
         missing = [
             label
@@ -189,18 +197,56 @@ class DoctorService:
         )
 
     def _check_write_authorization(self) -> DoctorCheck:
-        path = self._settings.research_dir / "credentials.json"
-        if path.is_file():
+        path = self._settings.credentials_path
+        server_id = self._zotero_info.server_id if self._zotero_info is not None else None
+        if server_id is None:
+            if self._settings.web_write_configured:
+                return DoctorCheck(
+                    "write_authorization",
+                    CheckStatus.WARN,
+                    "Local writes are unavailable; Web API fallback credentials are configured. "
+                    "Run `uv run research authorize` to verify them.",
+                )
             return DoctorCheck(
                 "write_authorization",
                 CheckStatus.WARN,
-                "Local write credentials are configured; live authorization is not tested.",
+                "This Zotero build does not support local writes. Configure "
+                "ZOTERO_WEB_API_KEY and ZOTERO_WEB_LIBRARY_ID for write operations.",
+            )
+        if not path.exists() and not path.is_symlink():
+            if self._settings.web_write_configured:
+                return DoctorCheck(
+                    "write_authorization",
+                    CheckStatus.WARN,
+                    "Web API fallback credentials are configured; run `uv run research "
+                    "authorize` to verify them.",
+                )
+            return DoctorCheck(
+                "write_authorization",
+                CheckStatus.WARN,
+                "Local write credentials are not configured; they are only needed for write "
+                "operations.",
+            )
+        try:
+            key = CredentialStore(path).get(server_id)
+        except CredentialStoreError:
+            return DoctorCheck(
+                "write_authorization",
+                CheckStatus.FAIL,
+                "Local write credentials are malformed or unsafe; run `uv run research "
+                "authorize` to replace them.",
+            )
+        if key is None:
+            return DoctorCheck(
+                "write_authorization",
+                CheckStatus.WARN,
+                "No local write credential matches this Zotero server; run `uv run research "
+                "authorize` before a write.",
             )
         return DoctorCheck(
             "write_authorization",
-            CheckStatus.WARN,
-            "Local write credentials are not configured; they are only needed for write "
-            "operations.",
+            CheckStatus.PASS,
+            "A local write credential matches this Zotero server; no write was attempted.",
         )
 
 

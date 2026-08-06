@@ -1,7 +1,7 @@
 """Small, typed client for the local Zotero API."""
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -12,13 +12,22 @@ import httpx
 
 from research_kb.exceptions import (
     PDFNotFoundError,
+    ZoteroAuthorizationError,
+    ZoteroConflictError,
     ZoteroInvalidItemReferenceError,
     ZoteroInvalidResponseError,
     ZoteroItemNotFoundError,
+    ZoteroLocalWriteUnsupportedError,
     ZoteroUnavailableError,
     ZoteroUnsupportedItemError,
 )
-from research_kb.models import ZoteroAttachment, ZoteroCreator, ZoteroItem, ZoteroItemBatch
+from research_kb.models import (
+    ZoteroAttachment,
+    ZoteroCreator,
+    ZoteroItem,
+    ZoteroItemBatch,
+    ZoteroTag,
+)
 
 SUPPORTED_ITEM_TYPES = frozenset(
     {
@@ -54,11 +63,24 @@ class ZoteroClient:
         *,
         timeout: float = 5.0,
         transport: httpx.BaseTransport | None = None,
+        api_key: str | None = None,
     ) -> None:
+        parsed_base_url = httpx.URL(base_url)
+        self._is_local_api = parsed_base_url.host in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }
+        headers = {"Zotero-API-Version": "3"}
+        if api_key is not None:
+            if not api_key.strip():
+                raise ZoteroAuthorizationError("A Zotero Web API key must not be blank.")
+            headers["Zotero-API-Key"] = api_key
         self._client = httpx.Client(
             base_url=f"{base_url.rstrip('/')}/",
             timeout=timeout,
             transport=transport,
+            headers=headers,
         )
 
     def __enter__(self) -> Self:
@@ -96,6 +118,153 @@ class ZoteroClient:
             server_id=server_id,
             schema_version=schema_version,
         )
+
+    def authorize(self, app_name: str) -> tuple[str, str]:
+        """Request a local API key after confirming the connected Zotero server."""
+        if not isinstance(app_name, str) or not app_name.strip():
+            raise ZoteroInvalidResponseError("Zotero authorization app name must not be empty.")
+        server = self.discover()
+        if server.server_id is None:
+            raise ZoteroLocalWriteUnsupportedError(
+                "This Zotero build does not support local write authorization."
+            )
+        try:
+            response = self._client.post(
+                "local/authorize",
+                headers={"Zotero-Server-ID": server.server_id},
+                json={"appName": app_name},
+            )
+            if response.status_code in {
+                httpx.codes.NOT_FOUND,
+                httpx.codes.METHOD_NOT_ALLOWED,
+                httpx.codes.NOT_IMPLEMENTED,
+            }:
+                raise ZoteroLocalWriteUnsupportedError(
+                    "This Zotero build does not support local writes; no data was changed."
+                )
+            if response.status_code in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN}:
+                raise ZoteroAuthorizationError("Zotero did not authorize this application.")
+            response.raise_for_status()
+        except ZoteroAuthorizationError:
+            raise
+        except httpx.HTTPError:
+            raise ZoteroUnavailableError("Could not authorize with the local Zotero API.") from None
+        try:
+            payload: object = response.json()
+        except ValueError as error:
+            raise ZoteroInvalidResponseError(
+                "Zotero returned invalid authorization JSON."
+            ) from error
+        data = self._mapping(payload, "authorization response")
+        key = self._required_string(data, "key", "authorization response")
+        return server.server_id, key
+
+    def verify_web_api_key(
+        self,
+        *,
+        library_type: str,
+        library_id: int,
+    ) -> None:
+        """Verify that the configured Web API key can write the target library."""
+        self._validate_library_reference(library_type, library_id)
+        try:
+            response = self._client.get("keys/current")
+        except httpx.HTTPError:
+            raise ZoteroUnavailableError("Could not verify the Zotero Web API key.") from None
+        if response.status_code in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN}:
+            raise ZoteroAuthorizationError(
+                "The Zotero Web API key is invalid or lacks access."
+            )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError:
+            raise ZoteroUnavailableError("Could not verify the Zotero Web API key.") from None
+        try:
+            payload: object = response.json()
+        except ValueError as error:
+            raise ZoteroInvalidResponseError(
+                "Zotero returned invalid Web API key metadata."
+            ) from error
+        data = self._mapping(payload, "Web API key metadata")
+        access = self._mapping(data.get("access"), "Web API key metadata.access")
+        if library_type == "user":
+            if data.get("userID") != library_id:
+                raise ZoteroAuthorizationError(
+                    "The Zotero Web API key belongs to a different user library."
+                )
+            permission = self._mapping(
+                access.get("user"), "Web API key metadata.access.user"
+            )
+        else:
+            groups = self._mapping(access.get("groups"), "Web API key metadata.access.groups")
+            raw_permission = groups.get(str(library_id), groups.get("all"))
+            permission = self._mapping(
+                raw_permission, "Web API key metadata.access.groups permission"
+            )
+        if permission.get("library") is not True or permission.get("write") is not True:
+            raise ZoteroAuthorizationError(
+                "The Zotero Web API key does not have library write permission."
+            )
+
+    def patch_tags(
+        self,
+        zotero_key: str,
+        tags: Sequence[ZoteroTag] | tuple[str, ...] | list[str],
+        version: int,
+        api_key: str,
+        *,
+        library_type: str = "user",
+        library_id: int = 0,
+    ) -> int:
+        """Replace an item's complete tag list, using Zotero's version precondition."""
+        self._validate_item_reference(zotero_key, library_type, library_id)
+        if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+            raise ZoteroInvalidItemReferenceError(
+                "Zotero item version must be a non-negative integer."
+            )
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise ZoteroAuthorizationError(
+                "A Zotero authorization key is required for tag updates."
+            )
+        tag_payload = self._patch_tag_payload(tags)
+        if tag_payload is None:
+            raise ZoteroInvalidResponseError("Zotero tags must be non-empty strings.")
+        path = f"{library_type}s/{library_id}/items/{zotero_key}"
+        try:
+            response = self._client.patch(
+                path,
+                headers={
+                    "If-Unmodified-Since-Version": str(version),
+                    "Zotero-API-Key": api_key,
+                },
+                json={"tags": tag_payload},
+            )
+        except httpx.HTTPError:
+            raise ZoteroUnavailableError("Could not update tags through the Zotero API.") from None
+        if response.status_code in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN}:
+            raise ZoteroAuthorizationError("Zotero did not authorize the tag update.")
+        if response.status_code == httpx.codes.NOT_FOUND:
+            raise ZoteroItemNotFoundError(
+                f"Zotero item {zotero_key!r} was not found during the tag update."
+            )
+        if response.status_code in {
+            httpx.codes.METHOD_NOT_ALLOWED,
+            httpx.codes.NOT_IMPLEMENTED,
+        }:
+            if self._is_local_api:
+                raise ZoteroLocalWriteUnsupportedError(
+                    "This Zotero build does not support local writes; no data was changed."
+                )
+            raise ZoteroUnavailableError(
+                "The Zotero Web API rejected the tag write; no data was changed."
+            )
+        if response.status_code == httpx.codes.PRECONDITION_FAILED:
+            raise ZoteroConflictError("Zotero item changed before the tag update could be applied.")
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError:
+            raise ZoteroUnavailableError("Could not update tags through the Zotero API.") from None
+        return self._last_modified_version(response)
 
     def get_item(
         self, zotero_key: str, *, library_type: str = "user", library_id: int = 0
@@ -356,6 +525,7 @@ class ZoteroClient:
             url=cls._optional_string(data, "url", "item.data"),
             abstract=cls._optional_string(data, "abstractNote", "item.data"),
             tags=cls._tags(data.get("tags")),
+            tag_entries=cls._tag_entries(data.get("tags")),
             volume=cls._optional_string(data, "volume", "item.data"),
             issue=cls._optional_string(data, "issue", "item.data"),
             pages=cls._optional_string(data, "pages", "item.data"),
@@ -580,13 +750,47 @@ class ZoteroClient:
 
     @classmethod
     def _tags(cls, value: object) -> tuple[str, ...]:
+        return tuple(entry.tag for entry in cls._tag_entries(value))
+
+    @classmethod
+    def _tag_entries(cls, value: object) -> tuple[ZoteroTag, ...]:
         if value is None:
             return ()
         tags = cls._list(value, "item.data.tags")
-        return tuple(
-            cls._required_string(cls._mapping(tag, "item.data.tags entry"), "tag", "tag")
-            for tag in tags
-        )
+        result: list[ZoteroTag] = []
+        for tag in tags:
+            entry = cls._mapping(tag, "item.data.tags entry")
+            tag_type = entry.get("type", 0)
+            if tag_type not in {None, 0, 1} or isinstance(tag_type, bool):
+                raise ZoteroInvalidResponseError("Zotero response has invalid tag.type.")
+            result.append(
+                ZoteroTag(
+                    tag=cls._required_string(entry, "tag", "tag"),
+                    type=tag_type,
+                )
+            )
+        return tuple(result)
+
+    @staticmethod
+    def _patch_tag_payload(
+        tags: Sequence[ZoteroTag] | tuple[str, ...] | list[str],
+    ) -> list[dict[str, str | int]] | None:
+        if not isinstance(tags, (tuple, list)):
+            return None
+        payload: list[dict[str, str | int]] = []
+        for entry in tags:
+            if isinstance(entry, ZoteroTag):
+                if not entry.tag.strip():
+                    return None
+                rendered: dict[str, str | int] = {"tag": entry.tag}
+                if entry.type is not None:
+                    rendered["type"] = entry.type
+                payload.append(rendered)
+            elif isinstance(entry, str) and entry.strip():
+                payload.append({"tag": entry})
+            else:
+                return None
+        return payload
 
     @classmethod
     def _collections(cls, value: object) -> tuple[str, ...]:

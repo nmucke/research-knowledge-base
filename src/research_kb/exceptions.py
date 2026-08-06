@@ -29,8 +29,16 @@ class ZoteroAuthorizationError(ResearchKBError):
     """Raised when a Zotero write is not authorized."""
 
 
+class ZoteroLocalWriteUnsupportedError(ZoteroAuthorizationError):
+    """Raised when the connected Zotero build has no local-write protocol."""
+
+
 class ZoteroConflictError(ResearchKBError):
     """Raised when a Zotero write loses a version race."""
+
+
+class CredentialStoreError(ResearchKBError):
+    """Raised when local Zotero credentials cannot be safely used."""
 
 
 class BetterBibTeXUnavailableError(ResearchKBError):

@@ -37,6 +37,7 @@ class ZoteroItem(DomainModel):
     url: str | None = None
     abstract: str | None = None
     tags: tuple[str, ...] = ()
+    tag_entries: tuple["ZoteroTag", ...] = ()
     volume: str | None = None
     issue: str | None = None
     pages: str | None = None
@@ -77,6 +78,21 @@ class ZoteroCreator(DomainModel):
     def display_name(self) -> str:
         """Human-readable creator name."""
         return self.name or " ".join(part for part in (self.first_name, self.last_name) if part)
+
+
+class ZoteroTag(DomainModel):
+    """One Zotero tag, retaining its optional automatic/manual type marker."""
+
+    tag: str
+    type: Literal[0, 1] | None = 0
+
+    @field_validator("tag")
+    @classmethod
+    def tag_must_not_be_blank(cls, value: str) -> str:
+        """Reject unusable empty tags while retaining Zotero's type information."""
+        if not value.strip():
+            raise ValueError("tag must not be blank")
+        return value
 
 
 class ZoteroAttachment(DomainModel):
@@ -415,6 +431,36 @@ class TagRegistry(DomainModel):
         """Represented namespaces in canonical order."""
         present = {entry.name.partition("/")[0] for entry in self.entries}
         return tuple(namespace for namespace in TAG_NAMESPACES if namespace in present)
+
+
+class TagPushPlan(DomainModel):
+    """An immutable, auditable proposal for reconciling one paper's tags."""
+
+    zotero_key: str
+    citekey: str
+    existing_zotero_tags: tuple[str, ...]
+    existing_zotero_tag_entries: tuple[ZoteroTag, ...]
+    approved_curated_tags: tuple[str, ...]
+    ai_applied_tags: tuple[str, ...]
+    suggested_tags: tuple[str, ...]
+    pending_tags: tuple[str, ...]
+    merged_zotero_tags: tuple[str, ...]
+    merged_zotero_tag_entries: tuple[ZoteroTag, ...]
+
+    @property
+    def requires_push(self) -> bool:
+        """Whether the plan adds a controlled, human-approved tag."""
+        return bool(self.pending_tags)
+
+
+class TagPushReport(DomainModel):
+    """Immutable outcome of a tag reconciliation attempt."""
+
+    plan: TagPushPlan
+    dry_run: StrictBool
+    pushed: StrictBool
+    note_updated: StrictBool
+    attempts: StrictInt
 
 
 class ReviewSnapshot(DomainModel):

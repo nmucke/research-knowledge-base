@@ -16,6 +16,7 @@ def test_vault_paths_are_resolved_from_root(tmp_path: Path) -> None:
     assert settings.papers_dir == tmp_path / "Literature" / "Papers"
     assert settings.tag_registry_path == tmp_path / "System" / "tag-registry.md"
     assert settings.log_dir == tmp_path / ".research" / "logs"
+    assert settings.credentials_path == tmp_path / ".research" / "credentials.json"
 
 
 def test_log_level_is_case_insensitive(tmp_path: Path) -> None:
@@ -90,4 +91,63 @@ def test_non_loopback_local_service_url_is_rejected(tmp_path: Path) -> None:
             _env_file=None,
             research_vault_path=tmp_path,
             zotero_local_api="https://example.com/api",
+        )
+
+
+def test_allowed_tag_namespaces_use_the_canonical_default(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, research_vault_path=tmp_path)
+
+    assert settings.allowed_tag_namespaces == (
+        "domain",
+        "method",
+        "task",
+        "property",
+        "model",
+        "data",
+    )
+
+
+def test_allowed_tag_namespaces_accept_a_comma_separated_subset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ALLOWED_TAG_NAMESPACES", "domain, method")
+
+    settings = Settings(_env_file=None, research_vault_path=tmp_path)
+
+    assert settings.allowed_tag_namespaces == ("domain", "method")
+
+
+@pytest.mark.parametrize("value", [(), ("domain", "domain"), ("unknown",)])
+def test_invalid_allowed_tag_namespaces_are_rejected(
+    tmp_path: Path, value: tuple[str, ...]
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, research_vault_path=tmp_path, allowed_tag_namespaces=value)
+
+
+def test_web_write_credentials_are_optional_but_must_be_configured_together(
+    tmp_path: Path,
+) -> None:
+    empty = Settings(
+        _env_file=None,
+        research_vault_path=tmp_path,
+        zotero_web_api_key="",
+        zotero_web_library_id="",
+    )
+    assert not empty.web_write_configured
+
+    configured = Settings(
+        _env_file=None,
+        research_vault_path=tmp_path,
+        zotero_web_api_key=" private ",
+        zotero_web_library_id=123,
+    )
+    assert configured.web_write_configured
+    assert configured.zotero_web_api_key == "private"
+
+    with pytest.raises(ValidationError, match="must be configured together"):
+        Settings(
+            _env_file=None,
+            research_vault_path=tmp_path,
+            zotero_web_api_key="private",
         )

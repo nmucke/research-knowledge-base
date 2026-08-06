@@ -122,5 +122,58 @@ UNKNOWN_TAG_POLICY=warning
 ```
 
 This policy changes only the severity of unknown tags. It does not approve,
-promote, or push tags to Zotero. Agent workflow acceptance testing and tag
-dry-run support follow in implementation steps 12 through 14.
+promote, or push tags to Zotero.
+
+## Reconcile approved tags with Zotero
+
+Only tags already approved in a paper note's `tags` frontmatter are eligible to
+be sent to Zotero. AI-suggested tags are never pushed. To approve a suggestion,
+first add it to `System/tag-registry.md`, move it from `ai_suggested_tags` into
+`tags`, and remove it from `ai_suggested_tags`. Inspect the deterministic local
+comparison first:
+
+```sh
+uv run research tags chen2025flowdas
+uv run research push-tags chen2025flowdas --dry-run
+```
+
+After reviewing that output, configure write access. Current stable Zotero
+builds expose a read-only local API, so create a dedicated key with library
+write permission at <https://www.zotero.org/settings/keys> and add its key and
+numeric user or group library ID to the ignored `.env` file:
+
+```dotenv
+ZOTERO_WEB_API_KEY=<dedicated-write-key>
+ZOTERO_WEB_LIBRARY_ID=<numeric-library-id>
+```
+
+The numeric user ID is shown on Zotero's API Keys page. Then verify the
+configured key without printing or copying it:
+
+```sh
+uv run research authorize
+```
+
+If a future Zotero build provides local write authorization, the same command
+uses it preferentially and stores its server-scoped credential in
+`.research/credentials.json`. Both `.env` and the local credential file are
+ignored by Git, and keys are never printed or logged. Then perform the
+deliberate, add-only write:
+
+```sh
+uv run research push-tags chen2025flowdas
+```
+
+Tag pushes add missing approved tags and preserve every existing Zotero tag;
+they never remove tags. On a version conflict, the command fetches the newest
+item and retries once with a newly merged tag list. A second conflict stops
+without updating the note; inspect with `uv run research tags <citekey>` before
+retrying.
+For multiple notes, only `push-tags --all --dry-run` is supported, so each live
+write remains an explicit citation-key action. Local writes are preferred when
+available; otherwise the command uses only the explicitly configured official
+Zotero Web API fallback.
+
+By default the allowed controlled-tag namespaces are `domain`, `method`,
+`task`, `property`, `model`, and `data`. A local comma-separated subset may be
+configured with `ALLOWED_TAG_NAMESPACES`; this does not approve new tags.

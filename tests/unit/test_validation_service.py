@@ -182,6 +182,33 @@ def test_unknown_approved_tag_can_be_a_warning(tmp_path: Path) -> None:
     assert report.warnings[0].code == "tag-unknown"
 
 
+def test_tag_sync_status_requires_matching_tags_and_date(tmp_path: Path) -> None:
+    _registry(tmp_path)
+    store = _store(tmp_path)
+    store.create(
+        _note(
+            tags=("domain/weather",),
+            zotero_tags=(),
+            zotero_tag_sync="synced",
+            zotero_tag_sync_date=None,
+        )
+    )
+
+    report = ValidationService(_settings(tmp_path), store).run()
+
+    assert {"tag-sync-date-missing", "tag-sync-inconsistent"} <= _codes(report)
+
+
+def test_unsynchronized_tag_state_rejects_stale_sync_date(tmp_path: Path) -> None:
+    _registry(tmp_path)
+    store = _store(tmp_path)
+    store.create(_note(zotero_tag_sync="not-synced", zotero_tag_sync_date=date(2026, 8, 6)))
+
+    report = ValidationService(_settings(tmp_path), store).run()
+
+    assert "tag-sync-date-inconsistent" in _codes(report)
+
+
 def test_reports_required_identity_enum_and_boolean_schema_failures(tmp_path: Path) -> None:
     _registry(tmp_path)
     store = _store(tmp_path)

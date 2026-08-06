@@ -21,9 +21,12 @@ def test_agent_instructions_are_equivalent_and_executable() -> None:
 
     assert instructions[0] == instructions[1]
     contract = instructions[0]
-    assert contract.index("research review-context <citekey>") < contract.index(
-        "research validate <citekey>"
+    assert contract.index("uv run research review-context <citekey>") < contract.index(
+        "uv run research validate <citekey>"
     )
+    assert "not expected to be on the shell's `PATH`" in contract
+    assert "do not probe for or invoke a bare `research` executable first" in contract
+    assert ".venv/bin/research ..." in contract
     for required_input in (
         "paper note",
         "extracted paper text",

@@ -2,14 +2,18 @@
 
 This repository is an Obsidian literature vault connected to Zotero. Zotero owns bibliographic metadata and PDFs; the user alone owns human reading state and notes.
 
+## Project command runner
+
+The `research` CLI is project-local and is not expected to be on the shell's `PATH`. Run every CLI command from the repository root as `uv run research ...`; do not probe for or invoke a bare `research` executable first. If the execution sandbox prevents `uv` from accessing its cache, use the existing `.venv/bin/research ...` executable as the equivalent fallback.
+
 ## Review workflow
 
 For a request to review `<citekey>`:
 
-1. Run `research review-context <citekey>`.
+1. Run `uv run research review-context <citekey>`.
 2. Read all four files reported by the command: the paper note, extracted paper text, `System/reading-profile.md`, and `System/tag-registry.md`.
 3. Edit only AI-owned frontmatter fields and the content between `<!-- BEGIN MANAGED:AI_REVIEW -->` and `<!-- END MANAGED:AI_REVIEW -->`.
-4. Run `research validate <citekey>` and correct only AI-owned content until it passes.
+4. Run `uv run research validate <citekey>` and correct only AI-owned content until it passes.
 
 ## Review contract
 
@@ -59,4 +63,5 @@ Replace the managed AI-review placeholder with this structure, using truthful va
 - Never change `human_read_status`, `human_read_date`, `human_rating`, `human_priority`, or `human_relevance`.
 - Never write inside `## Human notes`, or alter Zotero-owned, Better-BibTeX-owned, shared curated, or unmanaged content.
 - Never promote suggested tags into `tags`, edit the tag registry to approve them, or push tags to Zotero as part of a review. Those require a separate explicit user action.
+- For an explicit tag-push request, invoke `uv run research push-tags`; never read credentials or construct raw Zotero write requests.
 - Never repair validation failures by changing protected content.
