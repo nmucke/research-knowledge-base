@@ -2,9 +2,17 @@
 
 import re
 from datetime import date, datetime
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 
 class DomainModel(BaseModel):
@@ -71,7 +79,53 @@ class ZoteroCreator(DomainModel):
 
 
 class ZoteroAttachment(DomainModel):
-    """Validated Zotero attachment (fields added in step 8)."""
+    """A non-deleted PDF child attachment returned by Zotero."""
+
+    key: str
+    version: StrictInt
+    parent_item: str
+    content_type: Literal["application/pdf"]
+    filename: str | None = None
+    link_mode: str
+    title: str | None = None
+    date_modified: str
+    mtime: StrictInt | None = None
+
+    @field_validator("key", "parent_item")
+    @classmethod
+    def attachment_keys_must_be_valid(cls, value: str) -> str:
+        """Keep attachment and parent identities valid for Zotero API paths."""
+        if re.fullmatch(r"[A-Z0-9]{8}", value) is None:
+            raise ValueError("must be exactly eight uppercase alphanumeric characters")
+        return value
+
+    @field_validator("version", "mtime")
+    @classmethod
+    def attachment_numbers_must_be_nonnegative(cls, value: int | None) -> int | None:
+        """Reject impossible Zotero versions and file modification times."""
+        if value is not None and value < 0:
+            raise ValueError("must be non-negative")
+        return value
+
+    @field_validator("link_mode")
+    @classmethod
+    def link_mode_must_not_be_blank(cls, value: str) -> str:
+        """Require the attachment storage mode used by Zotero."""
+        if not value.strip():
+            raise ValueError("link_mode must not be blank")
+        return value
+
+    @field_validator("date_modified")
+    @classmethod
+    def attachment_date_modified_must_be_an_iso_timestamp(cls, value: str) -> str:
+        """Keep attachment preference ordering based on a valid timestamp."""
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("date_modified must be an ISO timestamp") from None
+        if parsed.tzinfo is None:
+            raise ValueError("date_modified must include a timezone")
+        return value
 
 
 class PaperNote(DomainModel):
@@ -255,7 +309,84 @@ class ZoteroItemBatch(DomainModel):
 
 
 class ExtractionMetadata(DomainModel):
-    """Validated extraction cache metadata (fields added in step 9)."""
+    """Validated provenance stored in an extracted-paper cache file."""
+
+    citekey: str
+    zotero_key: str
+    attachment_key: str
+    source_mtime: StrictFloat
+    source_size: StrictInt
+    extracted_at: datetime
+    extractor: Literal["pymupdf"] = "pymupdf"
+    extractor_version: str
+    pages: StrictInt
+    failed_pages: tuple[StrictInt, ...] = ()
+
+    @field_validator("citekey")
+    @classmethod
+    def citekey_must_be_a_safe_filename_component(cls, value: str) -> str:
+        """Use the same deliberately narrow filename alphabet as paper notes."""
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._$^-]*", value) is None:
+            raise ValueError("citekey must be a nonempty safe filename component")
+        return value
+
+    @field_validator("zotero_key", "attachment_key")
+    @classmethod
+    def keys_must_be_eight_character_zotero_keys(cls, value: str) -> str:
+        """Reject path-like or otherwise malformed Zotero identities."""
+        if re.fullmatch(r"[A-Z0-9]{8}", value) is None:
+            raise ValueError("must be exactly eight uppercase alphanumeric characters")
+        return value
+
+    @field_validator("source_mtime")
+    @classmethod
+    def source_mtime_must_be_nonnegative(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("source_mtime must be non-negative")
+        return value
+
+    @field_validator("source_size")
+    @classmethod
+    def source_size_must_be_nonnegative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("source_size must be non-negative")
+        return value
+
+    @field_validator("pages")
+    @classmethod
+    def pages_must_be_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("pages must be positive")
+        return value
+
+    @field_validator("failed_pages")
+    @classmethod
+    def failed_pages_must_be_positive_and_unique(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        if any(page <= 0 for page in value):
+            raise ValueError("failed_pages must contain positive page numbers")
+        if len(set(value)) != len(value):
+            raise ValueError("failed_pages must not contain duplicates")
+        return value
+
+    @field_validator("extractor_version")
+    @classmethod
+    def extractor_version_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("extractor_version must not be blank")
+        return value
+
+    @field_validator("extracted_at")
+    @classmethod
+    def extracted_at_must_include_a_timezone(cls, value: datetime) -> datetime:
+        if value.utcoffset() is None:
+            raise ValueError("extracted_at must include a timezone")
+        return value
+
+    @model_validator(mode="after")
+    def failed_pages_must_exist_in_document(self) -> Self:
+        if any(page > self.pages for page in self.failed_pages):
+            raise ValueError("failed_pages must not exceed pages")
+        return self
 
 
 class TagRegistry(DomainModel):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +11,7 @@ import pytest
 
 from research_kb.exceptions import SyncConflictError, SyncError, ZoteroUnavailableError
 from research_kb.markdown_store import MarkdownStore
-from research_kb.models import PaperNote, ZoteroItem, ZoteroItemBatch
+from research_kb.models import PaperNote, ZoteroAttachment, ZoteroItem, ZoteroItemBatch
 from research_kb.sync_service import SyncAction, SyncService
 
 
@@ -21,14 +21,30 @@ def _item(key: str = "ABCD1234", *, version: int = 2, title: str = "New title") 
     )
 
 
+def _attachment(key: str = "PDFX5678", *, parent: str = "ABCD1234") -> ZoteroAttachment:
+    return ZoteroAttachment(
+        key=key,
+        version=3,
+        parent_item=parent,
+        content_type="application/pdf",
+        filename="paper.pdf",
+        link_mode="imported_file",
+        title="Paper PDF",
+        date_modified="2026-08-06T10:00:00Z",
+        mtime=1_786_009_600_000,
+    )
+
+
 @dataclass
 class _Zotero:
     batches: list[object]
     targeted: dict[str, ZoteroItem]
     server_id: str | None = "server"
+    attachments: dict[str, ZoteroAttachment | None] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.calls: list[int | None] = []
+        self.attachment_calls: list[str] = []
 
     def discover(self) -> SimpleNamespace:
         return SimpleNamespace(server_id=self.server_id)
@@ -45,6 +61,13 @@ class _Zotero:
         del library_type, library_id
         return self.targeted[item_key]
 
+    def select_pdf_attachment(
+        self, item_key: str, *, library_type: str, library_id: int
+    ) -> ZoteroAttachment | None:
+        del library_type, library_id
+        self.attachment_calls.append(item_key)
+        return self.attachments.get(item_key)
+
 
 class _BBT:
     def __init__(self, keys: dict[str, str]) -> None:
@@ -55,19 +78,26 @@ class _BBT:
         return self.keys[item_key]
 
 
-def _settings(tmp_path: Path) -> SimpleNamespace:
+def _settings(
+    tmp_path: Path, *, library_type: str = "user", library_id: int = 0
+) -> SimpleNamespace:
     return SimpleNamespace(
         papers_dir=tmp_path / "Literature" / "Papers",
         research_dir=tmp_path / ".research",
-        zotero_library_type="user",
-        zotero_library_id=0,
+        zotero_library_type=library_type,
+        zotero_library_id=library_id,
     )
 
 
 def _service(
-    tmp_path: Path, zotero: _Zotero, keys: dict[str, str]
+    tmp_path: Path,
+    zotero: _Zotero,
+    keys: dict[str, str],
+    *,
+    library_type: str = "user",
+    library_id: int = 0,
 ) -> tuple[SyncService, MarkdownStore]:
-    settings = _settings(tmp_path)
+    settings = _settings(tmp_path, library_type=library_type, library_id=library_id)
     store = MarkdownStore(settings.papers_dir)
     return SyncService(settings, zotero, _BBT(keys), store), store
 
@@ -105,6 +135,72 @@ def test_new_full_sync_creates_note_and_persists_state(tmp_path: Path) -> None:
     assert json.loads((tmp_path / ".research/sync-state.json").read_text())["library_version"] == 5
 
 
+def test_sync_records_selected_pdf_and_correct_open_uri(tmp_path: Path) -> None:
+    item = _item()
+    attachment = _attachment(parent=item.key)
+    zotero = _Zotero(
+        [ZoteroItemBatch(items=(item,), library_version=5)],
+        {},
+        attachments={item.key: attachment},
+    )
+    service, store = _service(tmp_path, zotero, {item.key: "paper"})
+
+    service.run()
+
+    note = store.parse(store.note_path("paper")).note
+    assert note.pdf_attachment_key == attachment.key
+    assert note.pdf_uri == "zotero://open-pdf/library/items/PDFX5678"
+    assert zotero.attachment_calls == [item.key]
+
+
+def test_group_sync_uses_group_open_pdf_uri(tmp_path: Path) -> None:
+    item = _item()
+    attachment = _attachment(parent=item.key)
+    zotero = _Zotero(
+        [ZoteroItemBatch(items=(item,), library_version=5)],
+        {},
+        attachments={item.key: attachment},
+    )
+    service, store = _service(
+        tmp_path, zotero, {item.key: "paper"}, library_type="group", library_id=42
+    )
+
+    service.run()
+
+    note = store.parse(store.note_path("paper")).note
+    assert note.pdf_uri == "zotero://open-pdf/groups/42/items/PDFX5678"
+
+
+@pytest.mark.parametrize("scope", ["partial-text", "full-text"])
+def test_pdf_attachment_change_invalidates_a_text_review(tmp_path: Path, scope: str) -> None:
+    item = _item()
+    replacement = _attachment("NEWPDF12", parent=item.key)
+    zotero = _Zotero(
+        [ZoteroItemBatch(items=(item,), library_version=5)],
+        {},
+        attachments={item.key: replacement},
+    )
+    service, store = _service(tmp_path, zotero, {item.key: "paper"})
+    path = store.create(
+        PaperNote(
+            zotero_key=item.key,
+            citekey="paper",
+            title=item.title,
+            pdf_attachment_key="OLDPDF12",
+            pdf_uri="zotero://open-pdf/library/items/OLDPDF12",
+            ai_review_status="reviewed",
+            ai_review_scope=scope,  # type: ignore[arg-type]
+        )
+    )
+
+    report = service.run()
+
+    note = store.parse(path).note
+    assert report.items[0].action is SyncAction.UPDATED
+    assert note.pdf_attachment_key == replacement.key
+    assert note.ai_review_status == "outdated"
+
+
 def test_incremental_server_change_and_malformed_state_select_correct_reads(tmp_path: Path) -> None:
     batch = ZoteroItemBatch(items=(), library_version=6)
     zotero = _Zotero([batch], {})
@@ -139,9 +235,7 @@ def test_incremental_failure_retries_once_as_full(tmp_path: Path) -> None:
 def test_missing_server_id_forces_full_without_changing_cursor(tmp_path: Path) -> None:
     _state(tmp_path, version=4)
     item = _item()
-    zotero = _Zotero(
-        [ZoteroItemBatch(items=(item,), library_version=8)], {}, server_id=None
-    )
+    zotero = _Zotero([ZoteroItemBatch(items=(item,), library_version=8)], {}, server_id=None)
     service, store = _service(tmp_path, zotero, {item.key: "old"})
     path = store.create(
         PaperNote(

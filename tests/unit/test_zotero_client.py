@@ -1,9 +1,12 @@
 """Tests for local Zotero API discovery."""
 
+from pathlib import Path
+
 import httpx
 import pytest
 
 from research_kb.exceptions import (
+    PDFNotFoundError,
     ZoteroInvalidItemReferenceError,
     ZoteroInvalidResponseError,
     ZoteroItemNotFoundError,
@@ -156,6 +159,28 @@ def _item_payload() -> dict[str, object]:
             "collections": ["COLLECT01"],
             "dateAdded": "2026-08-05T10:00:00Z",
             "dateModified": "2026-08-06T10:00:00Z",
+        },
+    }
+
+
+def _attachment_payload(
+    key: str = "PDF00001",
+    *,
+    parent: str = "ABCDE123",
+    modified: str = "2026-08-06T10:00:00Z",
+) -> dict[str, object]:
+    return {
+        "key": key,
+        "version": 18,
+        "data": {
+            "itemType": "attachment",
+            "parentItem": parent,
+            "contentType": "application/pdf",
+            "filename": "Paper.pdf",
+            "linkMode": "imported_file",
+            "title": "Paper PDF",
+            "dateModified": modified,
+            "mtime": 1_786_009_600_000,
         },
     }
 
@@ -326,6 +351,163 @@ def test_supported_item_types_are_the_documented_set() -> None:
         "report",
         "document",
     }
+
+
+def test_get_child_attachments_filters_and_preserves_pdf_child_order() -> None:
+    note = {"key": "NOTE0001", "version": 1, "data": {"itemType": "note"}}
+    misleading = _attachment_payload("PDF00002")
+    misleading_data = misleading["data"]
+    assert isinstance(misleading_data, dict)
+    misleading_data.update({"contentType": "", "filename": "", "title": "Full Text PDF"})
+    deleted = _attachment_payload("PDF00003")
+    deleted_data = deleted["data"]
+    assert isinstance(deleted_data, dict)
+    deleted_data["deleted"] = True
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                note,
+                _attachment_payload("PDF00004"),
+                misleading,
+                deleted,
+                _attachment_payload("PDF00005"),
+            ],
+            request=request,
+        )
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        attachments = client.get_child_attachments("ABCDE123", library_type="user", library_id=0)
+
+    assert [attachment.key for attachment in attachments] == ["PDF00004", "PDF00005"]
+    assert attachments[0].parent_item == "ABCDE123"
+    assert requests[0].url.path == "/api/users/0/items/ABCDE123/children"
+    assert dict(requests[0].url.params) == {"limit": "100", "start": "0"}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda payload: payload.update({"key": "not-safe"}),
+        lambda payload: payload.update({"version": -1}),
+        lambda payload: payload["data"].update({"parentItem": "OTHER123"}),
+        lambda payload: payload["data"].update({"dateModified": "not-a-date"}),
+        lambda payload: payload["data"].update({"mtime": "yesterday"}),
+        lambda payload: payload["data"].update({"deleted": "false"}),
+        lambda payload: payload["data"].pop("linkMode"),
+    ],
+)
+def test_get_child_attachments_rejects_malformed_pdf_children(change: object) -> None:
+    payload = _attachment_payload()
+    assert callable(change)
+    change(payload)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[payload], request=request)
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ZoteroInvalidResponseError):
+            client.get_child_attachments("ABCDE123", library_type="user", library_id=0)
+
+
+def test_get_child_attachments_rejects_invalid_json_and_connection_errors() -> None:
+    def invalid_json(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not json", request=request)
+
+    with ZoteroClient(
+        "http://zotero.test/api", transport=httpx.MockTransport(invalid_json)
+    ) as client:
+        with pytest.raises(ZoteroInvalidResponseError, match="invalid JSON"):
+            client.get_child_attachments("ABCDE123", library_type="user", library_id=0)
+
+    def unavailable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down", request=request)
+
+    with ZoteroClient(
+        "http://zotero.test/api", transport=httpx.MockTransport(unavailable)
+    ) as client:
+        with pytest.raises(ZoteroUnavailableError, match="child attachments"):
+            client.get_child_attachments("ABCDE123", library_type="user", library_id=0)
+
+
+def test_resolve_attachment_path_decodes_plain_text_file_url(tmp_path: Path) -> None:
+    pdf = tmp_path / "Paper with spaces.pdf"
+    pdf.write_bytes(b"%PDF-1.7")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=pdf.as_uri(),
+            headers={"Content-Type": "text/plain"},
+            request=request,
+        )
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        path = client.resolve_attachment_path("PDF00001", library_type="group", library_id=42)
+
+    assert path == pdf
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.test/paper.pdf",
+        "file://remote-host/share/paper.pdf",
+        "file:relative/paper.pdf",
+        "file:////remote/share/paper.pdf",
+        "file:///tmp/paper%GG.pdf",
+        "not a URL",
+    ],
+)
+def test_resolve_attachment_path_rejects_nonlocal_or_malformed_urls(url: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=url, request=request)
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(PDFNotFoundError):
+            client.resolve_attachment_path("PDF00001", library_type="user", library_id=0)
+
+
+def test_resolve_attachment_path_rejects_missing_and_non_file_paths(tmp_path: Path) -> None:
+    responses = iter([(tmp_path / "missing.pdf").as_uri(), tmp_path.as_uri()])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=next(responses), request=request)
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(PDFNotFoundError, match="does not exist"):
+            client.resolve_attachment_path("PDF00001", library_type="user", library_id=0)
+        with pytest.raises(PDFNotFoundError, match="not a file"):
+            client.resolve_attachment_path("PDF00001", library_type="user", library_id=0)
+
+
+def test_select_pdf_attachment_prefers_primary_then_newest_available(tmp_path: Path) -> None:
+    primary = _attachment_payload("PDF00001", modified="2026-08-01T10:00:00Z")
+    older = _attachment_payload("PDF00002", modified="2026-08-02T10:00:00Z")
+    newest = _attachment_payload("PDF00003", modified="2026-08-03T10:00:00Z")
+    existing = {"PDF00002", "PDF00003"}
+    for key in existing:
+        (tmp_path / f"{key}.pdf").write_bytes(b"%PDF")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/children"):
+            return httpx.Response(200, json=[primary, older, newest], request=request)
+        key = request.url.path.split("/")[-4]
+        path = tmp_path / f"{key}.pdf"
+        return httpx.Response(200, text=path.as_uri(), request=request)
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        selected = client.select_pdf_attachment("ABCDE123", library_type="user", library_id=0)
+        (tmp_path / "PDF00001.pdf").write_bytes(b"%PDF")
+        primary_selected = client.select_pdf_attachment(
+            "ABCDE123", library_type="user", library_id=0
+        )
+
+    assert selected is not None and selected.key == "PDF00003"
+    assert primary_selected is not None and primary_selected.key == "PDF00001"
 
 
 def test_list_items_paginates_and_filters_non_paper_objects() -> None:

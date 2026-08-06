@@ -73,3 +73,8 @@ class Settings(BaseSettings):
     @property
     def log_dir(self) -> Path:
         return self.research_dir / "logs"
+
+    @property
+    def paper_text_dir(self) -> Path:
+        """Directory containing page-aware, regenerable PDF text caches."""
+        return self.research_dir / "paper-text"
