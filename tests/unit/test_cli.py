@@ -32,6 +32,34 @@ def test_help_starts_successfully() -> None:
     assert "show" in result.stdout
 
 
+def test_tag_command_help_lists_safe_workflow_commands() -> None:
+    result = runner.invoke(app, ["--help"], color=False)
+
+    assert result.exit_code == 0
+    assert "authorize" in result.stdout
+    assert "push-tags" in result.stdout
+    assert "tags" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["push-tags"],
+        ["push-tags", "paper2026", "--all"],
+        ["push-tags", "--all"],
+    ],
+)
+def test_push_tags_rejects_unsafe_target_combinations_before_network_access(
+    tmp_path: Path, arguments: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "ZoteroClient", _UnexpectedSyncClient)
+
+    result = runner.invoke(app, arguments, env={"RESEARCH_VAULT_PATH": str(tmp_path)})
+
+    assert result.exit_code == 1
+    assert result.stderr.startswith("Error: ")
+
+
 def test_version_starts_successfully() -> None:
     result = runner.invoke(app, ["--version"])
 

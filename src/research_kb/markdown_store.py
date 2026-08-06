@@ -65,6 +65,14 @@ _AI_FIELDS = frozenset(
         "ai_suggested_tags",
     )
 )
+_TAG_SYNC_FIELDS = frozenset(
+    (
+        "zotero_version",
+        "zotero_tags",
+        "zotero_tag_sync",
+        "zotero_tag_sync_date",
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -142,6 +150,15 @@ class MarkdownStore:
             path,
             updates,
             allowed_fields=_AI_FIELDS,
+            immutable_zotero_key=False,
+        )
+
+    def update_tag_sync_fields(self, path: Path, updates: Mapping[str, Any]) -> bool:
+        """Record a completed tag push without exposing other note ownership domains."""
+        return self._update_owned_fields(
+            path,
+            updates,
+            allowed_fields=_TAG_SYNC_FIELDS,
             immutable_zotero_key=False,
         )
 

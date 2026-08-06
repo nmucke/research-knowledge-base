@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from research_kb.config import Settings
+from research_kb.credential_store import CredentialStore
 from research_kb.doctor_service import CheckStatus, DoctorCheck, DoctorReport, DoctorService
 from research_kb.exceptions import BetterBibTeXUnavailableError, ZoteroUnavailableError
 from research_kb.zotero_client import ZoteroServerInfo
@@ -75,6 +76,31 @@ def test_missing_server_id_is_a_healthy_compatibility_warning(tmp_path: Path) ->
     assert check.status is CheckStatus.WARN
     assert "API 3, schema 42" in check.message
     assert "does not provide a server ID" in check.message
+    write_check = _checks(report)["write_authorization"]
+    assert write_check.status is CheckStatus.WARN
+    assert "does not support local writes" in write_check.message
+
+
+def test_missing_server_id_reports_configured_web_fallback(tmp_path: Path) -> None:
+    _create_required_vault_paths(tmp_path)
+    settings = Settings(
+        _env_file=None,
+        research_vault_path=tmp_path,
+        zotero_web_api_key="secret",
+        zotero_web_library_id=123,
+    )
+    service = DoctorService(
+        settings,
+        FakeZoteroClient(ZoteroServerInfo(3, None, 42)),
+        FakeBetterBibTeXClient(),
+    )
+
+    report = service.run()
+
+    check = _checks(report)["write_authorization"]
+    assert check.status is CheckStatus.WARN
+    assert "Web API fallback credentials are configured" in check.message
+    assert "secret" not in check.message
 
 
 def test_missing_required_vault_path_fails(tmp_path: Path) -> None:
@@ -89,7 +115,7 @@ def test_missing_required_vault_path_fails(tmp_path: Path) -> None:
     assert "tag registry" in check.message
 
 
-def test_references_and_credential_file_states(tmp_path: Path) -> None:
+def test_references_and_malformed_credential_file_states(tmp_path: Path) -> None:
     _create_required_vault_paths(tmp_path)
     (tmp_path / "references.bib").write_text("% bibliography\n", encoding="utf-8")
     credentials = tmp_path / ".research" / "credentials.json"
@@ -100,9 +126,36 @@ def test_references_and_credential_file_states(tmp_path: Path) -> None:
 
     checks = _checks(report)
     assert checks["references_bib"].status is CheckStatus.PASS
-    assert checks["write_authorization"].status is CheckStatus.WARN
+    assert checks["write_authorization"].status is CheckStatus.FAIL
     assert "secret" not in checks["write_authorization"].message
-    assert "not tested" in checks["write_authorization"].message
+    assert "malformed or unsafe" in checks["write_authorization"].message
+
+
+def test_matching_write_credential_passes_without_exposing_key(tmp_path: Path) -> None:
+    _create_required_vault_paths(tmp_path)
+    CredentialStore(tmp_path / ".research" / "credentials.json").save(
+        "server-1", "never-show-this"
+    )
+
+    report = _service(tmp_path).run()
+
+    check = _checks(report)["write_authorization"]
+    assert check.status is CheckStatus.PASS
+    assert "never-show-this" not in check.message
+    assert "no write was attempted" in check.message
+
+
+def test_credential_for_another_server_warns(tmp_path: Path) -> None:
+    _create_required_vault_paths(tmp_path)
+    CredentialStore(tmp_path / ".research" / "credentials.json").save(
+        "other-server", "never-show-this"
+    )
+
+    report = _service(tmp_path).run()
+
+    check = _checks(report)["write_authorization"]
+    assert check.status is CheckStatus.WARN
+    assert "matches this Zotero server" in check.message
 
 
 def _service(

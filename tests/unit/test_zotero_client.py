@@ -1,5 +1,6 @@
 """Tests for local Zotero API discovery."""
 
+import json
 from pathlib import Path
 
 import httpx
@@ -7,13 +8,173 @@ import pytest
 
 from research_kb.exceptions import (
     PDFNotFoundError,
+    ZoteroAuthorizationError,
+    ZoteroConflictError,
     ZoteroInvalidItemReferenceError,
     ZoteroInvalidResponseError,
     ZoteroItemNotFoundError,
+    ZoteroLocalWriteUnsupportedError,
     ZoteroUnavailableError,
     ZoteroUnsupportedItemError,
 )
+from research_kb.models import ZoteroTag
 from research_kb.zotero_client import SUPPORTED_ITEM_TYPES, ZoteroClient, ZoteroServerInfo
+
+
+def test_authorize_discovers_then_posts_expected_request() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return _response(request)
+        return httpx.Response(200, json={"key": "private-key"}, request=request)
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        assert client.authorize("Research KB") == ("local-zotero", "private-key")
+
+    assert requests[1].method == "POST"
+    assert requests[1].url.path == "/api/local/authorize"
+    assert requests[1].headers["Zotero-Server-ID"] == "local-zotero"
+    assert json.loads(requests[1].content) == {"appName": "Research KB"}
+
+
+def test_authorize_without_server_id_reports_unsupported_local_writes() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Zotero-API-Version": "3", "Zotero-Schema-Version": "42"},
+            request=request,
+        )
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ZoteroLocalWriteUnsupportedError, match="does not support"):
+            client.authorize("Research KB")
+
+
+def test_verify_web_api_key_requires_matching_user_write_access() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "userID": 123,
+                "access": {"user": {"library": True, "write": True}},
+            },
+            request=request,
+        )
+
+    with ZoteroClient(
+        "https://api.zotero.test", transport=httpx.MockTransport(handler), api_key="private"
+    ) as client:
+        client.verify_web_api_key(library_type="user", library_id=123)
+
+    assert requests[0].url.path == "/keys/current"
+    assert requests[0].headers["Zotero-API-Key"] == "private"
+
+    with ZoteroClient(
+        "https://api.zotero.test", transport=httpx.MockTransport(handler), api_key="private"
+    ) as client:
+        with pytest.raises(ZoteroAuthorizationError, match="different user"):
+            client.verify_web_api_key(library_type="user", library_id=456)
+
+
+@pytest.mark.parametrize("status", [401, 403, 405, 501])
+def test_authorize_maps_denied_or_unsupported_without_exposing_response(status: int) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return _response(request)
+        return httpx.Response(status, text="never-show-this", request=request)
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ZoteroAuthorizationError) as error:
+            client.authorize("Research KB")
+
+    assert "never-show-this" not in str(error.value)
+
+
+def test_patch_tags_sends_complete_payload_and_returns_version() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204, headers={"Last-Modified-Version": "9"}, request=request)
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        assert client.patch_tags("ABCD1234", [ZoteroTag(tag="auto", type=1)], 8, "private") == 9
+
+    request = requests[0]
+    assert request.method == "PATCH"
+    assert request.url.path == "/api/users/0/items/ABCD1234"
+    assert request.headers["If-Unmodified-Since-Version"] == "8"
+    assert request.headers["Zotero-API-Key"] == "private"
+    assert json.loads(request.content) == {"tags": [{"tag": "auto", "type": 1}]}
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_patch_tags_maps_authorization_errors_without_key(status: int) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, request=request)
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ZoteroAuthorizationError) as error:
+            client.patch_tags("ABCD1234", [], 8, "never-show-this")
+
+    assert "never-show-this" not in str(error.value)
+
+
+@pytest.mark.parametrize("status", [405, 501])
+def test_patch_tags_maps_unsupported_local_writes(status: int) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, request=request)
+
+    with ZoteroClient(
+        "http://localhost:23119/api", transport=httpx.MockTransport(handler)
+    ) as client:
+        with pytest.raises(ZoteroLocalWriteUnsupportedError, match="does not support"):
+            client.patch_tags("ABCD1234", [], 8, "private")
+
+
+def test_patch_tags_maps_conflict() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(412, request=request)
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ZoteroConflictError):
+            client.patch_tags("ABCD1234", [], 8, "private")
+
+
+def test_patch_tags_maps_missing_item_separately_from_unsupported_writes() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, request=request)
+
+    with ZoteroClient("https://api.zotero.test", transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ZoteroItemNotFoundError, match="during the tag update"):
+            client.patch_tags("ABCD1234", [], 8, "private")
+
+
+def test_get_item_preserves_tag_types_and_rejects_unknown_types() -> None:
+    payload = _item_payload()
+    data = payload["data"]
+    assert isinstance(data, dict)
+    data["tags"] = [{"tag": "manual"}, {"tag": "automatic", "type": 1}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload, request=request)
+
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        item = client.get_item("ABCDE123")
+    assert item.tag_entries == (
+        ZoteroTag(tag="manual", type=0),
+        ZoteroTag(tag="automatic", type=1),
+    )
+
+    data["tags"] = [{"tag": "invalid", "type": 2}]
+    with ZoteroClient("http://zotero.test/api", transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ZoteroInvalidResponseError, match="tag.type"):
+            client.get_item("ABCDE123")
 
 
 def _response(request: httpx.Request) -> httpx.Response:

@@ -413,6 +413,34 @@ class ValidationService:
                 )
             )
 
+        if note.zotero_tag_sync == "synced":
+            if note.zotero_tag_sync_date is None:
+                issues.append(
+                    self._issue(
+                        path,
+                        "tag-sync-date-missing",
+                        "A synchronized tag state must record zotero_tag_sync_date.",
+                    )
+                )
+            missing_from_zotero = tuple(sorted(set(note.tags) - set(note.zotero_tags)))
+            if missing_from_zotero:
+                issues.append(
+                    self._issue(
+                        path,
+                        "tag-sync-inconsistent",
+                        "The note is marked synchronized but approved tag(s) are absent from "
+                        f"zotero_tags: {', '.join(missing_from_zotero)}.",
+                    )
+                )
+        elif note.zotero_tag_sync_date is not None:
+            issues.append(
+                self._issue(
+                    path,
+                    "tag-sync-date-inconsistent",
+                    "An unsynchronized tag state must not retain zotero_tag_sync_date.",
+                )
+            )
+
         if registry_tags is not None:
             for tag in note.tags:
                 if _TAG.fullmatch(tag) is not None and tag not in registry_tags:

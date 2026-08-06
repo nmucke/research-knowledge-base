@@ -9,13 +9,20 @@ from rich.console import Console
 
 from research_kb import __version__
 from research_kb.better_bibtex import BetterBibTeXClient
-from research_kb.config import Settings
+from research_kb.config import ZOTERO_WEB_API_URL, Settings
+from research_kb.credential_store import CredentialStore
 from research_kb.doctor_service import CheckStatus, DoctorService
-from research_kb.exceptions import ResearchKBError
+from research_kb.exceptions import (
+    ResearchKBError,
+    ZoteroAuthorizationError,
+    ZoteroLocalWriteUnsupportedError,
+)
 from research_kb.extraction_service import ExtractionResult, ExtractionService, ReviewContext
 from research_kb.logging_config import LOGGER_NAME, configure_logging
 from research_kb.markdown_store import MarkdownStore
+from research_kb.models import TagPushPlan, TagPushReport
 from research_kb.sync_service import SyncAction, SyncReport, SyncService
+from research_kb.tag_service import TagService
 from research_kb.validation_service import ValidationReport, ValidationService
 from research_kb.zotero_client import ZoteroClient
 
@@ -32,6 +39,7 @@ CHECK_LABELS = {
     "vault_paths": "Vault paths",
     "write_authorization": "Write authorization",
 }
+_AUTHORIZATION_APP_NAME = "Research Literature Manager"
 
 
 def _version_callback(value: bool) -> None:
@@ -276,6 +284,238 @@ def validate(
     _print_validation_report(report)
     if report.errors:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def authorize(ctx: typer.Context) -> None:
+    """Request and locally store a Zotero key for controlled tag writes."""
+    settings = cast(Settings, ctx.obj["settings"])
+    logger = logging.getLogger(LOGGER_NAME)
+    try:
+        try:
+            with ZoteroClient(settings.zotero_local_api) as zotero_client:
+                server_id, key = zotero_client.authorize(_AUTHORIZATION_APP_NAME)
+        except ZoteroLocalWriteUnsupportedError:
+            _verify_web_write_access(settings)
+            logger.info("authorize_complete mode=web-api")
+            typer.echo("Zotero Web API write access verified; no local credential was stored.")
+            return
+        CredentialStore(settings.credentials_path).save(server_id, key)
+    except ResearchKBError as error:
+        logger.error("authorize_failed error=%s", error)
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    logger.info("authorize_complete server_id=%s", server_id)
+    typer.echo("Authorization saved for this local Zotero instance.")
+
+
+@app.command()
+def tags(
+    ctx: typer.Context,
+    citekey: Annotated[str, typer.Argument(help="Citation key of the paper to compare.")],
+) -> None:
+    """Show the deterministic, add-only tag state for one paper note."""
+    settings = cast(Settings, ctx.obj["settings"])
+    logger = logging.getLogger(LOGGER_NAME)
+    try:
+        store = MarkdownStore(settings.papers_dir)
+        with ZoteroClient(settings.zotero_local_api) as zotero_client:
+            server = zotero_client.discover()
+            plan = TagService(
+                settings, store, zotero_client, server_id=server.server_id
+            ).plan(store.note_path(citekey))
+    except (ResearchKBError, ValueError) as error:
+        logger.error("tags_failed citekey=%s error=%s", citekey, error)
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    _print_tag_plan(plan)
+
+
+@app.command("push-tags")
+def push_tags(
+    ctx: typer.Context,
+    citekey: str = typer.Argument("", help="Citation key of the paper to push."),
+    all_notes: bool = typer.Option(
+        False, "--all", help="Preview every paper note (requires --dry-run)."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report additions without writing Zotero."
+    ),
+) -> None:
+    """Push approved tags to Zotero, preserving every existing Zotero tag."""
+    logger = logging.getLogger(LOGGER_NAME)
+    if not citekey and not all_notes:
+        _tag_error(logger, "Provide exactly one citekey or --all.")
+    if citekey and all_notes:
+        _tag_error(logger, "Provide exactly one citekey or --all.")
+    if all_notes and not dry_run:
+        _tag_error(logger, "--all is only supported with --dry-run for safety.")
+
+    settings = cast(Settings, ctx.obj["settings"])
+    store = MarkdownStore(settings.papers_dir)
+    paths = (
+        tuple(sorted(settings.papers_dir.glob("*.md")))
+        if all_notes
+        else (store.note_path(citekey),)
+    )
+    try:
+        if dry_run:
+            with ZoteroClient(settings.zotero_local_api) as zotero_client:
+                server = zotero_client.discover()
+                service = TagService(
+                    settings, store, zotero_client, server_id=server.server_id
+                )
+                reports = tuple(service.push(path, dry_run=True) for path in paths)
+        else:
+            reports = (_push_one_with_authorization(settings, store, paths[0]),)
+    except (ResearchKBError, ValueError) as error:
+        logger.error("push_tags_failed error=%s", error)
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    for report in reports:
+        _log_tag_report(logger, report)
+        _print_tag_report(report)
+
+
+def _push_one_with_authorization(
+    settings: Settings, store: MarkdownStore, path: Path
+) -> TagPushReport:
+    """Push once with a stored key, then authorize and retry exactly once on 401/403."""
+    credentials = CredentialStore(settings.credentials_path)
+    with ZoteroClient(settings.zotero_local_api) as zotero_client:
+        server = zotero_client.discover()
+        if server.server_id is None:
+            return _push_one_with_web_api(settings, store, path)
+        key = credentials.get(server.server_id)
+        if key is None:
+            if settings.web_write_configured:
+                return _push_one_with_web_api(settings, store, path)
+            raise ZoteroAuthorizationError(
+                "No local Zotero authorization is stored; run `uv run research authorize` first."
+            )
+        service = TagService(settings, store, zotero_client, server_id=server.server_id)
+        try:
+            return service.push(path, api_key=key)
+        except ZoteroLocalWriteUnsupportedError:
+            return _push_one_with_web_api(settings, store, path)
+        except ZoteroAuthorizationError:
+            try:
+                server_id, replacement_key = zotero_client.authorize(
+                    _AUTHORIZATION_APP_NAME
+                )
+            except ZoteroLocalWriteUnsupportedError:
+                return _push_one_with_web_api(settings, store, path)
+            if server_id != server.server_id:
+                raise ZoteroAuthorizationError(
+                    "The Zotero server changed during authorization; no tags were written."
+                ) from None
+            credentials.save(server_id, replacement_key)
+            return TagService(
+                settings, store, zotero_client, server_id=server_id
+            ).push(path, api_key=replacement_key)
+
+
+def _push_one_with_web_api(
+    settings: Settings, store: MarkdownStore, path: Path
+) -> TagPushReport:
+    """Use the explicit Web API fallback when local writes are unavailable."""
+    web_settings, api_key = _web_write_settings(settings)
+    with ZoteroClient(ZOTERO_WEB_API_URL, api_key=api_key) as web_client:
+        web_client.verify_web_api_key(
+            library_type=web_settings.zotero_library_type,
+            library_id=web_settings.zotero_library_id,
+        )
+        return TagService(
+            web_settings,
+            store,
+            web_client,
+            enforce_server_identity=False,
+        ).push(path, api_key=api_key)
+
+
+def _verify_web_write_access(settings: Settings) -> None:
+    """Verify configured Web API fallback credentials without displaying them."""
+    web_settings, api_key = _web_write_settings(settings)
+    with ZoteroClient(ZOTERO_WEB_API_URL, api_key=api_key) as web_client:
+        web_client.verify_web_api_key(
+            library_type=web_settings.zotero_library_type,
+            library_id=web_settings.zotero_library_id,
+        )
+
+
+def _web_write_settings(settings: Settings) -> tuple[Settings, str]:
+    """Return settings targeted at the configured Web library or explain setup."""
+    if not settings.web_write_configured:
+        raise ZoteroLocalWriteUnsupportedError(
+            "This Zotero build does not support local writes. Configure "
+            "ZOTERO_WEB_API_KEY and ZOTERO_WEB_LIBRARY_ID in .env for the Web API "
+            "fallback, then run `uv run research authorize`."
+        )
+    assert settings.zotero_web_api_key is not None
+    assert settings.zotero_web_library_id is not None
+    return (
+        settings.model_copy(update={"zotero_library_id": settings.zotero_web_library_id}),
+        settings.zotero_web_api_key,
+    )
+
+
+def _tag_error(logger: logging.Logger, message: str) -> None:
+    """Emit a usage error before opening a client or reading credentials."""
+    logger.error("push_tags_failed error=%s", message)
+    typer.echo(f"Error: {message}", err=True)
+    raise typer.Exit(code=1)
+
+
+def _print_tag_plan(plan: TagPushPlan) -> None:
+    """Render an auditable, key-free tag plan in a fixed field order."""
+    typer.echo(f"Citation key: {plan.citekey}")
+    typer.echo(f"Zotero key: {plan.zotero_key}")
+    typer.echo(f"Existing Zotero tags: {_format_tags(plan.existing_zotero_tags)}")
+    typer.echo(f"Approved tags: {_format_tags(plan.approved_curated_tags)}")
+    typer.echo(f"AI applied tags: {_format_tags(plan.ai_applied_tags)}")
+    typer.echo(f"Suggested tags (not pushed): {_format_tags(plan.suggested_tags)}")
+    typer.echo(f"Pending additions: {_format_tags(plan.pending_tags)}")
+
+
+def _print_tag_report(report: TagPushReport) -> None:
+    """Render the plan and outcome without exposing authorization material."""
+    _print_tag_plan(report.plan)
+    if report.dry_run:
+        outcome = (
+            f"would add {_format_tags(report.plan.pending_tags)}"
+            if report.plan.pending_tags
+            else "no additions required"
+        )
+        typer.echo(f"DRY-RUN: {outcome}")
+    elif report.pushed:
+        typer.echo(
+            f"PUSH: added {_format_tags(report.plan.pending_tags)} "
+            f"(attempts={report.attempts})"
+        )
+    else:
+        typer.echo("PUSH: already synchronized (no Zotero write required)")
+
+
+def _format_tags(tags: tuple[str, ...]) -> str:
+    return ", ".join(tags) if tags else "none"
+
+
+def _log_tag_report(logger: logging.Logger, report: TagPushReport) -> None:
+    """Log identities and additions without authorization material."""
+    logger.info(
+        "tag_reconcile_complete citekey=%s zotero_key=%s dry_run=%s pushed=%s "
+        "attempts=%s tags_added=%s note_updated=%s",
+        report.plan.citekey,
+        report.plan.zotero_key,
+        report.dry_run,
+        report.pushed,
+        report.attempts,
+        ",".join(report.plan.pending_tags) or "none",
+        report.note_updated,
+    )
 
 
 def _sync_error(logger: logging.Logger, message: str) -> None:
