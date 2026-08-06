@@ -1,22 +1,34 @@
 # Research Knowledge Base
 
 A local-first literature-management vault connecting Zotero, Better BibTeX,
-Obsidian, and a small Python CLI. The implementation follows
-`specs_document.pdf` and currently contains the repository and core CLI workflow.
+Obsidian, and a small Python CLI, implemented from `specs_document.pdf`.
+
+Zotero owns bibliographic metadata, PDFs, annotations, and its own tags. The
+Markdown vault owns your reading status, your notes, the AI review state, and
+curated tags. The `research` CLI moves data between the two conservatively:
+it never overwrites human notes, never deletes Zotero tags, and only writes to
+Zotero when you explicitly ask it to.
+
+Claude Code and Codex read the extracted paper text and write only AI-owned
+fields and the managed AI-review block; they follow `CLAUDE.md` and `AGENTS.md`.
 
 ## Requirements
 
 - Python 3.11 or newer
 - [`uv`](https://docs.astral.sh/uv/) (recommended), or `pip`
+- Zotero 7 with its local API enabled
+- The Better BibTeX for Zotero extension
+- Obsidian (optional, but the intended reading and triage interface)
 
-## Development setup
+## Setup from a clean checkout
+
+### 1. Install the CLI
 
 With `uv`:
 
 ```sh
 uv sync --all-groups
 uv run research --help
-uv run pytest
 ```
 
 Alternatively, create a Python 3.11 virtual environment and run:
@@ -26,13 +38,46 @@ python -m pip install -e .
 research --help
 ```
 
-Copy `.env.example` to `.env` for local overrides. Never commit `.env` or
-anything containing Zotero credentials.
+The `research` command is project-local. Every example below uses
+`uv run research ...` from the repository root.
 
-## Diagnostics
+### 2. Enable Zotero's local API
 
-Implementation steps 1 through 11 are complete. Run the local environment checks
-with:
+Start Zotero and enable the local HTTP API in Zotero's *Advanced* settings
+(the setting that allows other applications on this computer to communicate
+with Zotero). The API then answers on `http://localhost:23119/api/`.
+
+The local API is unauthenticated for reads, so keep the port bound to
+localhost and never forward it to other machines.
+
+### 3. Install Better BibTeX
+
+Install Better BibTeX in Zotero and let it generate citation keys. Pin the keys
+of papers you already cite elsewhere, so a metadata edit cannot silently rename
+a note. Configure a "Keep updated" export of your library to `references.bib`
+in this repository if you want a live bibliography.
+
+Better BibTeX answers JSON-RPC on
+`http://localhost:23119/better-bibtex/json-rpc`.
+
+### 4. Configure local settings
+
+```sh
+cp .env.example .env
+```
+
+The defaults match a standard single-user Zotero installation
+(`ZOTERO_LIBRARY_TYPE=user`, `ZOTERO_LIBRARY_ID=0`). Set a group library ID if
+you work in a group library. `.env`, `.research/credentials.json`, and every
+API key are ignored by Git and must never be committed.
+
+### 5. Open the vault in Obsidian
+
+Open this repository folder as an Obsidian vault. Enable the core **Bases**
+feature to use the dashboards in `Literature/Dashboards/`. No Zotero-specific
+Obsidian plugin is required.
+
+### 6. Verify the installation
 
 ```sh
 uv run research doctor
@@ -41,7 +86,30 @@ uv run research doctor
 The command checks Zotero and Better BibTeX connectivity, required vault paths,
 `references.bib`, configuration, and local-write credential status. It runs all
 checks, exits non-zero when a required check fails, and treats optional setup as
-a warning.
+a warning. Missing write credentials are a warning: they are only needed for
+tag pushes.
+
+## The literature workflow
+
+1. Save a paper with the Zotero Connector and confirm Zotero has metadata and a
+   PDF.
+2. Run `uv run research sync` to create or update the paper note.
+3. Open the note in Obsidian and optionally set `human_read_status: queued`,
+   `human_priority`, and `human_relevance`.
+4. Run `uv run research review-context <citekey>` and ask Claude Code or Codex
+   to review the paper.
+5. Run `uv run research validate <citekey>` until it passes.
+6. Approve any proposed tag yourself: add it to `System/tag-registry.md`, move
+   it from `ai_suggested_tags` into `tags`, and remove it from
+   `ai_suggested_tags`.
+7. Run `uv run research push-tags <citekey> --dry-run`, then
+   `uv run research push-tags <citekey>`.
+8. Read the paper yourself, set `human_read_status: read` with `human_read_date`
+   and `human_rating`, and write under `## Human notes`. The AI review stays
+   unchanged next to your own assessment.
+
+`tests/integration/test_acceptance.py` drives this entire sequence, including a
+changed PDF marking the review outdated, against a fake Zotero API.
 
 ## Inspect an item
 
@@ -67,6 +135,10 @@ server identity changes), the command automatically falls back to a full sync
 and reports that choice. Sync updates only Zotero-owned metadata and preserves
 your human notes. Use `--full` after permanently emptying Zotero's trash when
 the installed local API does not expose its deletion log.
+
+When a reviewed paper's PDF attachment changes under a text-based review, or its
+title or abstract changes under an abstract-only review, sync sets
+`ai_review_status: outdated` so the review can be repeated deliberately.
 
 ## Extract PDF text
 
@@ -192,3 +264,89 @@ Obsidian's Settings, then open a `.base` file from the File Explorer.
 | `AI Reviewed.base` | Papers with an AI review and its recommendation details. |
 | `Recommended Reading.base` | Unread or queued papers recommended as `must-read` or `read`. |
 | `Human Read.base` | Contains **Read** and **Read but AI-unverified** views: completed papers, and completed papers whose AI review still needs human verification. |
+
+## Generated state
+
+Everything under `.research/` is rebuildable and normally excluded from Git:
+extracted paper text, the sync cursor, review snapshots, backups, logs, and any
+local credential. Deleting the directory costs nothing but a re-extraction; the
+paper notes themselves are the durable record.
+
+Command logs are written to `.research/logs/`. They record commands, item keys,
+files changed, and tags added, and they never contain API keys or paper text.
+Use `--verbose` for detailed console diagnostics.
+
+## Troubleshooting
+
+Run `uv run research doctor` first: it identifies most setup problems, and its
+output distinguishes a failed required check from an optional warning.
+
+**`Zotero local API is unavailable`** — Zotero is not running, or its local API
+is not enabled in Zotero's Advanced settings. Confirm the endpoint answers:
+`curl -i http://localhost:23119/api/`. If you changed the port, set
+`ZOTERO_LOCAL_API` in `.env`.
+
+**`Better BibTeX is unavailable`** — the extension is missing or Zotero was not
+restarted after installing it. Confirm that
+`http://localhost:23119/better-bibtex/json-rpc` responds.
+
+**`Better BibTeX has no citation key for Zotero item ...`** — generate or
+refresh the key in Better BibTeX (right-click the item), then run `sync` again.
+
+**A note was renamed unexpectedly** — the citation key changed in Better BibTeX.
+Sync renames the file and preserves its contents. Pin citation keys in Better
+BibTeX for papers you cite elsewhere.
+
+**`Paper ... has no PDF attachment`** — attach a PDF in Zotero and run
+`uv run research sync` before extracting. Linked files must exist locally;
+PDFs are never copied into the vault.
+
+**`contains no usable extractable text`, or "The PDF appears scanned"** — the
+PDF has no text layer. OCR is outside version 0.1; review from the abstract
+instead and record `ai_review_scope: abstract-only`.
+
+**Extraction seems stale** — rebuild the cache with
+`uv run research extract <citekey> --force`.
+
+**`full-text-cache-missing` or `extraction-cache-mismatch`** — the review claims
+full-text coverage but the cache is absent or belongs to a different PDF. Run
+`uv run research extract <citekey>` and repeat the review; a replaced PDF also
+sets `ai_review_status: outdated`.
+
+**`human-field-changed` or `human-notes-changed`** — an agent modified protected
+content during a review workflow. Restore the human values (Git history is the
+safety net) and re-run `uv run research validate <citekey>`. Never repair these
+by editing the snapshot.
+
+**`tag-unknown` or `applied-tag-unknown`** — a tag is missing from
+`System/tag-registry.md`. Add a definition there if you approve the tag, or
+remove it from the note. Suggested tags must stay outside `tags` until you
+approve them.
+
+**`No local Zotero authorization is stored`** — run `uv run research authorize`.
+If Zotero reports that local writes are unsupported, configure
+`ZOTERO_WEB_API_KEY` and `ZOTERO_WEB_LIBRARY_ID` in `.env` and run `authorize`
+again to verify the key.
+
+**`Zotero item changed before the tag update could be applied`** — the item was
+edited in Zotero during the push. The command already retried once; run
+`uv run research tags <citekey>` to inspect the current state and push again.
+
+**Notes marked `zotero_missing: true`** — the item is no longer in the Zotero
+library the CLI reads. Nothing is deleted automatically. Restore the item in
+Zotero, or delete the note yourself once you are sure.
+
+**Incremental sync missed a deletion** — some Zotero builds do not expose the
+deletion log. Run `uv run research sync --full` to reconcile.
+
+## Development
+
+```sh
+uv run ruff check .
+uv run mypy
+uv run pytest
+```
+
+Unit tests live in `tests/unit/`; `tests/integration/` holds the end-to-end
+acceptance test for the complete workflow. CI runs the same three commands on
+every push and pull request.
