@@ -1,5 +1,6 @@
 """CLI-level tests for PDF extraction and review-context rendering."""
 
+import re
 from pathlib import Path
 from typing import ClassVar, Self
 
@@ -131,5 +132,7 @@ def test_extract_help_lists_force_and_review_context_is_registered() -> None:
     root_help = runner.invoke(cli.app, ["--help"], color=False)
 
     assert extract_help.exit_code == root_help.exit_code == 0
-    assert "--force" in extract_help.output
-    assert "review-context" in root_help.output
+    extract_output = re.sub(r"\x1b\[[0-9;]*m", "", extract_help.output)
+    root_output = re.sub(r"\x1b\[[0-9;]*m", "", root_help.output)
+    assert "--force" in extract_output
+    assert "review-context" in root_output
