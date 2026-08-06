@@ -2,6 +2,7 @@
 
 import re
 from datetime import date, datetime
+from hashlib import sha256
 from typing import Literal, Self
 
 from pydantic import (
@@ -389,5 +390,56 @@ class ExtractionMetadata(DomainModel):
         return self
 
 
+TAG_NAMESPACES = ("domain", "method", "task", "property", "model", "data")
+
+
+class TagRegistryEntry(DomainModel):
+    """One controlled tag and its human-readable definition."""
+
+    name: str
+    definition: str
+
+
 class TagRegistry(DomainModel):
-    """Validated controlled-tag registry (fields added with tag support)."""
+    """Validated ordered controlled-tag registry."""
+
+    entries: tuple[TagRegistryEntry, ...]
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """Registered tag names in document order."""
+        return tuple(entry.name for entry in self.entries)
+
+    @property
+    def namespaces(self) -> tuple[str, ...]:
+        """Represented namespaces in canonical order."""
+        present = {entry.name.partition("/")[0] for entry in self.entries}
+        return tuple(namespace for namespace in TAG_NAMESPACES if namespace in present)
+
+
+class ReviewSnapshot(DomainModel):
+    """Protected user-owned state captured before an agent review workflow."""
+
+    schema_version: Literal[1] = 1
+    zotero_key: str
+    citekey: str
+    human_read_status: Literal["unread", "queued", "skimming", "reading", "read"]
+    human_read_date: date | None
+    human_rating: int | None
+    human_priority: int | None
+    human_relevance: int | None
+    human_notes_sha256: str
+
+    @classmethod
+    def capture(cls, note: PaperNote, human_notes: str) -> "ReviewSnapshot":
+        """Capture fields and a non-reversible hash of the exact Human notes section."""
+        return cls(
+            zotero_key=note.zotero_key,
+            citekey=note.citekey,
+            human_read_status=note.human_read_status,
+            human_read_date=note.human_read_date,
+            human_rating=note.human_rating,
+            human_priority=note.human_priority,
+            human_relevance=note.human_relevance,
+            human_notes_sha256=sha256(human_notes.encode("utf-8")).hexdigest(),
+        )

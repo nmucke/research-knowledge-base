@@ -31,7 +31,7 @@ anything containing Zotero credentials.
 
 ## Diagnostics
 
-Implementation steps 1 through 10 are complete. Run the local environment checks
+Implementation steps 1 through 11 are complete. Run the local environment checks
 with:
 
 ```sh
@@ -91,4 +91,36 @@ uv run research review-context chen2025flowdas
 This refreshes extraction when needed and prints the paper note, extracted text,
 reading profile, and tag registry paths. `CLAUDE.md` and `AGENTS.md` contain the
 same constrained review contract; `System/Templates/Paper.md` is the canonical
-paper-note template. Review validation is implemented in the next plan step.
+paper-note template. The command also stores a one-shot snapshot of human-owned
+fields and a hash of the Human notes section. A successful targeted validation
+consumes that snapshot; a failure retains it so protected changes can be corrected.
+
+## Validate paper notes
+
+Validate every paper note in the vault with:
+
+```sh
+uv run research validate
+```
+
+Pass a citation key to validate one note:
+
+```sh
+uv run research validate chen2025flowdas
+```
+
+Validation checks the paper schema, status values, managed blocks, human/AI
+ownership rules, review completeness and provenance, extraction consistency,
+and controlled tags. It reports all discovered issues; validation errors produce
+a nonzero exit status, while warnings do not.
+
+Unknown tags are errors by default. To report unknown tags as warnings instead,
+set this local override in `.env`:
+
+```dotenv
+UNKNOWN_TAG_POLICY=warning
+```
+
+This policy changes only the severity of unknown tags. It does not approve,
+promote, or push tags to Zotero. Agent workflow acceptance testing and tag
+dry-run support follow in implementation steps 12 through 14.

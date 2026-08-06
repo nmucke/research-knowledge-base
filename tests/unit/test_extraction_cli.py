@@ -110,6 +110,9 @@ def test_review_context_auto_extracts_and_prints_spec_paths(
         "System/tag-registry.md",
     ]
     assert (tmp_path / ".research" / "paper-text" / "doeUseful2026.md").exists()
+    assert (
+        tmp_path / ".research" / "review-snapshots" / "doeUseful2026.json"
+    ).exists()
 
 
 def test_extract_domain_error_uses_standard_exit_convention(

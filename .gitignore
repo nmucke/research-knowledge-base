@@ -18,6 +18,7 @@ build/
 # Rebuildable research state
 .research/paper-text/*
 !.research/paper-text/.gitkeep
+.research/review-snapshots/*
 .research/backups/*
 !.research/backups/.gitkeep
 .research/logs/*
