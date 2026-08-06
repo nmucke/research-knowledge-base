@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 LibraryType = Literal["user", "group"]
+UnknownTagPolicy = Literal["error", "warning"]
 HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]", "::1"})
 
@@ -28,6 +29,7 @@ class Settings(BaseSettings):
     zotero_library_type: LibraryType = "user"
     zotero_library_id: int = 0
     research_log_level: LogLevel = "INFO"
+    unknown_tag_policy: UnknownTagPolicy = "error"
     zotero_web_api_key: str | None = None
     zotero_web_library_id: int | None = None
 

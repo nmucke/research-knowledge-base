@@ -37,6 +37,35 @@ def test_invalid_library_type_is_rejected(tmp_path: Path) -> None:
         )
 
 
+def test_unknown_tag_policy_defaults_to_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("UNKNOWN_TAG_POLICY", raising=False)
+
+    settings = Settings(_env_file=None, research_vault_path=tmp_path)
+
+    assert settings.unknown_tag_policy == "error"
+
+
+def test_unknown_tag_policy_loads_from_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("UNKNOWN_TAG_POLICY", "warning")
+
+    settings = Settings(_env_file=None, research_vault_path=tmp_path)
+
+    assert settings.unknown_tag_policy == "warning"
+
+
+def test_invalid_unknown_tag_policy_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            research_vault_path=tmp_path,
+            unknown_tag_policy="ignore",
+        )
+
+
 def test_service_urls_are_validated_httpx_compatible_strings(tmp_path: Path) -> None:
     settings = Settings(_env_file=None, research_vault_path=tmp_path)
 

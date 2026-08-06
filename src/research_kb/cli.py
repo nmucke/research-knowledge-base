@@ -16,6 +16,7 @@ from research_kb.extraction_service import ExtractionResult, ExtractionService, 
 from research_kb.logging_config import LOGGER_NAME, configure_logging
 from research_kb.markdown_store import MarkdownStore
 from research_kb.sync_service import SyncAction, SyncReport, SyncService
+from research_kb.validation_service import ValidationReport, ValidationService
 from research_kb.zotero_client import ZoteroClient
 
 app = typer.Typer(
@@ -244,6 +245,33 @@ def review_context(
     _print_review_context(context, settings.vault_path)
 
 
+@app.command()
+def validate(
+    ctx: typer.Context,
+    citekey: Annotated[
+        str | None,
+        typer.Argument(help="Optional citation key; omit it to validate the whole vault."),
+    ] = None,
+) -> None:
+    """Validate one paper note or the complete literature vault."""
+    settings = cast(Settings, ctx.obj["settings"])
+    logger = logging.getLogger(LOGGER_NAME)
+    try:
+        report = ValidationService(
+            settings,
+            MarkdownStore(settings.papers_dir),
+        ).run(citekey)
+    except ResearchKBError as error:
+        logger.error("validate_failed citekey=%s error=%s", citekey, error)
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    _log_validation_report(logger, report)
+    _print_validation_report(report)
+    if report.errors:
+        raise typer.Exit(code=1)
+
+
 def _sync_error(logger: logging.Logger, message: str) -> None:
     """Emit one consistent CLI error before constructing service clients."""
     logger.error("sync_failed error=%s", message)
@@ -305,6 +333,42 @@ def _print_review_context(context: ReviewContext, vault_path: Path) -> None:
             displayed = path
         typer.echo(f"{label}:")
         typer.echo(str(displayed))
+
+
+def _log_validation_report(logger: logging.Logger, report: ValidationReport) -> None:
+    """Record every validation result in stable order for troubleshooting."""
+    for issue in sorted(
+        report.issues,
+        key=lambda item: (item.severity.value, str(item.path), item.code, item.message),
+    ):
+        logger.info(
+            "validation_issue severity=%s path=%s code=%s message=%s",
+            issue.severity.value,
+            issue.path,
+            issue.code,
+            issue.message,
+        )
+    logger.info(
+        "validation_complete checked=%s errors=%s warnings=%s ok=%s",
+        report.checked_count,
+        len(report.errors),
+        len(report.warnings),
+        report.ok,
+    )
+
+
+def _print_validation_report(report: ValidationReport) -> None:
+    """Render deterministic single-line issues and a compact summary."""
+    for issue in sorted(
+        report.issues,
+        key=lambda item: (item.severity.value, str(item.path), item.code, item.message),
+    ):
+        label = "ERROR" if issue.severity.value == "error" else "WARN"
+        typer.echo(f"{label} {issue.path}: [{issue.code}] {issue.message}")
+    typer.echo(
+        f"Summary: checked={report.checked_count}, errors={len(report.errors)}, "
+        f"warnings={len(report.warnings)}"
+    )
 
 
 def _log_sync_report(logger: logging.Logger, report: SyncReport) -> None:

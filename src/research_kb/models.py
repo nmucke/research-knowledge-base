@@ -389,5 +389,28 @@ class ExtractionMetadata(DomainModel):
         return self
 
 
+TAG_NAMESPACES = ("domain", "method", "task", "property", "model", "data")
+
+
+class TagRegistryEntry(DomainModel):
+    """One controlled tag and its human-readable definition."""
+
+    name: str
+    definition: str
+
+
 class TagRegistry(DomainModel):
-    """Validated controlled-tag registry (fields added with tag support)."""
+    """Validated ordered controlled-tag registry."""
+
+    entries: tuple[TagRegistryEntry, ...]
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """Registered tag names in document order."""
+        return tuple(entry.name for entry in self.entries)
+
+    @property
+    def namespaces(self) -> tuple[str, ...]:
+        """Represented namespaces in canonical order."""
+        present = {entry.name.partition("/")[0] for entry in self.entries}
+        return tuple(namespace for namespace in TAG_NAMESPACES if namespace in present)
