@@ -177,3 +177,18 @@ Zotero Web API fallback.
 By default the allowed controlled-tag namespaces are `domain`, `method`,
 `task`, `property`, `model`, and `data`. A local comma-separated subset may be
 configured with `ALLOWED_TAG_NAMESPACES`; this does not approve new tags.
+
+## Obsidian dashboards
+
+The `.base` files in `Literature/Dashboards/` are Obsidian Bases views that
+query paper-note frontmatter in `Literature/Papers/`; simply opening a
+dashboard does not change any notes. Enable the core **Bases** feature in
+Obsidian's Settings, then open a `.base` file from the File Explorer.
+
+| Dashboard | Purpose |
+| --- | --- |
+| `Inbox.base` | Unread papers awaiting triage or review. |
+| `Reading Queue.base` | Queued papers, ordered by human priority and relevance. |
+| `AI Reviewed.base` | Papers with an AI review and its recommendation details. |
+| `Recommended Reading.base` | Unread or queued papers recommended as `must-read` or `read`. |
+| `Human Read.base` | Contains **Read** and **Read but AI-unverified** views: completed papers, and completed papers whose AI review still needs human verification. |

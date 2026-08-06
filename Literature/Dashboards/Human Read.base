@@ -1,0 +1,39 @@
+formulas:
+  paper: 'file.asLink(title)'
+properties:
+  formula.paper:
+    displayName: Title
+filters:
+  and:
+    - 'file.inFolder("Literature/Papers")'
+    - 'file.ext == "md"'
+    - 'type == "paper"'
+views:
+  - type: table
+    name: Human Read
+    filters:
+      and:
+        - 'human_read_status == "read"'
+    order:
+      - formula.paper
+      - note.authors
+      - note.year
+      - note.human_read_date
+      - note.human_rating
+      - note.human_relevance
+      - note.ai_review_status
+      - note.ai_recommendation
+  - type: table
+    name: Read but AI-unverified
+    filters:
+      and:
+        - 'human_read_status == "read"'
+        - 'ai_review_status == "reviewed"'
+        - 'ai_review_human_verified == false'
+    order:
+      - formula.paper
+      - note.authors
+      - note.year
+      - note.ai_recommendation
+      - note.ai_relevance
+      - note.ai_review_date

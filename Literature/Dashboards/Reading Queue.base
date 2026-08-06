@@ -1,0 +1,31 @@
+formulas:
+  paper: 'file.asLink(title)'
+properties:
+  formula.paper:
+    displayName: Title
+filters:
+  and:
+    - 'file.inFolder("Literature/Papers")'
+    - 'file.ext == "md"'
+    - 'type == "paper"'
+views:
+  - type: table
+    name: Reading Queue
+    filters:
+      and:
+        - 'human_read_status == "queued"'
+    order:
+      - formula.paper
+      - note.authors
+      - note.year
+      - note.human_priority
+      - note.human_relevance
+      - note.ai_recommendation
+      - note.date_added
+    sort:
+      - property: note.human_priority
+        direction: DESC
+      - property: note.human_relevance
+        direction: DESC
+      - property: note.date_added
+        direction: ASC
