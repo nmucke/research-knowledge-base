@@ -107,3 +107,11 @@ def test_parse_tag_registry_rejects_malformed_tag_headings(
 
     with pytest.raises(ValidationError, match="Malformed tag heading"):
         parse_tag_registry(path)
+
+
+def test_parse_tag_registry_reports_non_utf8_input(tmp_path: Path) -> None:
+    path = tmp_path / "tag-registry.md"
+    path.write_bytes(b"\xff\xfe")
+
+    with pytest.raises(ValidationError, match="Cannot read tag registry"):
+        parse_tag_registry(path)

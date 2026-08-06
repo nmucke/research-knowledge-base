@@ -91,7 +91,9 @@ uv run research review-context chen2025flowdas
 This refreshes extraction when needed and prints the paper note, extracted text,
 reading profile, and tag registry paths. `CLAUDE.md` and `AGENTS.md` contain the
 same constrained review contract; `System/Templates/Paper.md` is the canonical
-paper-note template.
+paper-note template. The command also stores a one-shot snapshot of human-owned
+fields and a hash of the Human notes section. A successful targeted validation
+consumes that snapshot; a failure retains it so protected changes can be corrected.
 
 ## Validate paper notes
 

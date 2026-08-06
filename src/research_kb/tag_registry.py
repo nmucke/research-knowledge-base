@@ -26,7 +26,7 @@ def parse_tag_registry(path: Path) -> TagRegistry:
     """Parse a controlled-tag registry Markdown file without modifying it."""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as error:
+    except (OSError, UnicodeError) as error:
         raise ValidationError(
             f"Cannot read tag registry {path}: {error}. Check that the configured file exists."
         ) from error

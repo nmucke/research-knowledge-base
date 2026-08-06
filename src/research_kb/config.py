@@ -80,3 +80,8 @@ class Settings(BaseSettings):
     def paper_text_dir(self) -> Path:
         """Directory containing page-aware, regenerable PDF text caches."""
         return self.research_dir / "paper-text"
+
+    @property
+    def review_snapshot_dir(self) -> Path:
+        """Directory containing one-shot protected-state review snapshots."""
+        return self.research_dir / "review-snapshots"

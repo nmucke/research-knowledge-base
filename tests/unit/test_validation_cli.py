@@ -53,6 +53,7 @@ class FakeReport:
 class FakeValidationService:
     result: ClassVar[FakeReport | ValidationError]
     calls: ClassVar[list[tuple[Path, Path, str | None]]] = []
+    consumed: ClassVar[list[str]] = []
 
     def __init__(self, settings: Settings, store: MarkdownStore) -> None:
         self.settings = settings
@@ -62,12 +63,16 @@ class FakeValidationService:
     def reset(cls, result: FakeReport | ValidationError) -> None:
         cls.result = result
         cls.calls = []
+        cls.consumed = []
 
     def run(self, citekey: str | None) -> FakeReport:
         type(self).calls.append((self.settings.vault_path, self.store.papers_dir, citekey))
         if isinstance(self.result, ValidationError):
             raise self.result
         return self.result
+
+    def consume_workflow_snapshot(self, citekey: str) -> None:
+        type(self).consumed.append(citekey)
 
 
 def _invoke(tmp_path: Path, *arguments: str) -> object:
@@ -156,6 +161,7 @@ def test_validate_forwards_optional_citekey(
 
     assert result.exit_code == 0
     assert FakeValidationService.calls[-1][2] == "doeUseful2026"
+    assert FakeValidationService.consumed == ["doeUseful2026"]
 
 
 def test_validate_domain_error_uses_standard_error_output(

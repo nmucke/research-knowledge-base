@@ -226,21 +226,24 @@ def review_context(
     settings = cast(Settings, ctx.obj["settings"])
     logger = logging.getLogger(LOGGER_NAME)
     try:
+        markdown_store = MarkdownStore(settings.papers_dir)
         with ZoteroClient(settings.zotero_local_api) as zotero_client:
             context = ExtractionService(
                 settings,
                 zotero_client,
-                MarkdownStore(settings.papers_dir),
+                markdown_store,
             ).review_context(citekey)
+        snapshot = ValidationService(settings, markdown_store).capture_workflow_snapshot(citekey)
     except ResearchKBError as error:
         logger.error("review_context_failed citekey=%s error=%s", citekey, error)
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=1) from None
 
     logger.info(
-        "review_context_ready citekey=%s extracted_paper=%s",
+        "review_context_ready citekey=%s extracted_paper=%s snapshot=%s",
         citekey,
         context.extracted_paper,
+        snapshot,
     )
     _print_review_context(context, settings.vault_path)
 
@@ -257,10 +260,13 @@ def validate(
     settings = cast(Settings, ctx.obj["settings"])
     logger = logging.getLogger(LOGGER_NAME)
     try:
-        report = ValidationService(
+        service = ValidationService(
             settings,
             MarkdownStore(settings.papers_dir),
-        ).run(citekey)
+        )
+        report = service.run(citekey)
+        if citekey is not None and not report.errors:
+            service.consume_workflow_snapshot(citekey)
     except ResearchKBError as error:
         logger.error("validate_failed citekey=%s error=%s", citekey, error)
         typer.echo(f"Error: {error}", err=True)

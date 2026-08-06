@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError as PydanticValidationError
@@ -16,7 +14,9 @@ from pydantic import ValidationError as PydanticValidationError
 from research_kb.config import Settings
 from research_kb.exceptions import ManagedBlockError, MarkdownParseError, ValidationError
 from research_kb.markdown_store import MarkdownStore
-from research_kb.models import TAG_NAMESPACES, ExtractionMetadata, PaperNote
+from research_kb.models import TAG_NAMESPACES, ExtractionMetadata, PaperNote, ReviewSnapshot
+from research_kb.review_contract import validate_managed_review
+from research_kb.review_snapshot import ReviewSnapshotStore
 from research_kb.tag_registry import parse_tag_registry
 
 _REQUIRED_IDENTITY = ("type", "schema_version", "zotero_key", "citekey", "title")
@@ -35,6 +35,23 @@ _REVIEW_FIELDS = (
     "ai_recommendation_confidence",
 )
 _NO_REVIEW_PLACEHOLDER = "No AI review has been generated."
+_HUMAN_FIELDS = (
+    "human_read_status",
+    "human_read_date",
+    "human_rating",
+    "human_priority",
+    "human_relevance",
+)
+_REVIEW_METADATA_FIELDS = (
+    "ai_review_agent",
+    "ai_review_model",
+    "ai_review_date",
+    "ai_recommendation",
+    "ai_recommendation_reason",
+    "ai_recommendation_confidence",
+    "ai_relevance",
+)
+_CACHE_PAGE_MARKER = re.compile(r"(?m)^<!-- PAGE ([1-9][0-9]*) -->$")
 
 
 class ValidationSeverity(StrEnum):
@@ -75,36 +92,6 @@ class ValidationReport:
 
 
 @dataclass(frozen=True)
-class HumanFieldSnapshot:
-    """Protected fields captured immediately before an agent workflow."""
-
-    field_names: ClassVar[tuple[str, ...]] = (
-        "human_read_status",
-        "human_read_date",
-        "human_rating",
-        "human_priority",
-        "human_relevance",
-    )
-
-    human_read_status: str
-    human_read_date: date | None
-    human_rating: int | None
-    human_priority: int | None
-    human_relevance: int | None
-
-    @classmethod
-    def from_note(cls, note: PaperNote) -> HumanFieldSnapshot:
-        """Capture only user-owned state, never AI or Zotero metadata."""
-        return cls(
-            human_read_status=note.human_read_status,
-            human_read_date=note.human_read_date,
-            human_rating=note.human_rating,
-            human_priority=note.human_priority,
-            human_relevance=note.human_relevance,
-        )
-
-
-@dataclass(frozen=True)
 class _RawDocument:
     metadata: dict[str, Any]
     body: str
@@ -116,14 +103,10 @@ class ValidationService:
     def __init__(self, settings: Settings, markdown_store: MarkdownStore) -> None:
         self.settings = settings
         self.markdown_store = markdown_store
+        self.snapshot_store = ReviewSnapshotStore(settings, markdown_store)
 
-    def run(
-        self,
-        citekey: str | None = None,
-        *,
-        human_baselines: Mapping[str, HumanFieldSnapshot] | None = None,
-    ) -> ValidationReport:
-        """Validate notes, optionally comparing pre-agent protected-field snapshots."""
+    def run(self, citekey: str | None = None) -> ValidationReport:
+        """Validate notes and any active pre-agent protected-content snapshots."""
         paths, target_issues = self._target_paths(citekey)
         issues = list(target_issues)
         if citekey is not None and target_issues:
@@ -142,7 +125,7 @@ class ValidationService:
             )
 
         for path in paths:
-            issues.extend(self._validate_path(path, registry_tags, human_baselines or {}))
+            issues.extend(self._validate_path(path, registry_tags))
 
         ordered = tuple(
             sorted(
@@ -157,10 +140,25 @@ class ValidationService:
         )
         return ValidationReport(checked_count=len(paths), issues=ordered)
 
+    def capture_workflow_snapshot(self, citekey: str) -> Path:
+        """Capture protected content immediately before an agent edits a note."""
+        return self.snapshot_store.capture(citekey)
+
+    def consume_workflow_snapshot(self, citekey: str) -> None:
+        """Consume the baseline after a successful targeted workflow validation."""
+        self.snapshot_store.consume(citekey)
+
     def _target_paths(
         self, citekey: str | None
     ) -> tuple[tuple[Path, ...], tuple[ValidationIssue, ...]]:
         if citekey is None:
+            if not self._safe_root(self.markdown_store.papers_dir):
+                issue = self._issue(
+                    self.markdown_store.papers_dir,
+                    "papers-directory-unsafe",
+                    "Configured paper-notes directory resolves outside the vault.",
+                )
+                return (), (issue,)
             if not self.markdown_store.papers_dir.is_dir():
                 issue = self._issue(
                     self.markdown_store.papers_dir,
@@ -197,7 +195,6 @@ class ValidationService:
         self,
         path: Path,
         registry_tags: frozenset[str] | None,
-        human_baselines: Mapping[str, HumanFieldSnapshot],
     ) -> list[ValidationIssue]:
         if not self._safe_note_path(path):
             return [
@@ -251,35 +248,62 @@ class ValidationService:
                 )
             )
 
-        issues.extend(self._review_issues(path, note, raw.body))
-        baseline = human_baselines.get(note.citekey)
+        has_review = self._has_review(note, raw.body)
+        issues.extend(self._review_issues(path, note, raw.body, has_review))
+        try:
+            baseline = self.snapshot_store.load(note.citekey)
+        except ValidationError as error:
+            issues.append(self._issue(path, "review-snapshot-invalid", str(error)))
+            baseline = None
         if baseline is not None:
-            issues.extend(self._human_ownership_issues(path, note, baseline))
+            issues.extend(self._human_ownership_issues(path, note, raw.body, baseline))
         issues.extend(self._tag_issues(path, note, registry_tags))
-        issues.extend(self._extraction_issues(path, note))
+        issues.extend(self._extraction_issues(path, note, has_review))
         return issues
 
     def _human_ownership_issues(
-        self, path: Path, note: PaperNote, baseline: HumanFieldSnapshot
+        self, path: Path, note: PaperNote, body: str, baseline: ReviewSnapshot
     ) -> list[ValidationIssue]:
         issues: list[ValidationIssue] = []
-        for field in HumanFieldSnapshot.field_names:
+        if baseline.zotero_key != note.zotero_key:
+            issues.append(
+                self._issue(
+                    path,
+                    "review-snapshot-identity-mismatch",
+                    "Review snapshot Zotero identity does not match the paper note.",
+                )
+            )
+        for field in _HUMAN_FIELDS:
             if getattr(note, field) == getattr(baseline, field):
                 continue
             message = f"Protected field {field!r} changed during the agent workflow."
             if field == "human_read_status" and note.human_read_status == "read":
                 message += " AI review state must never infer that the user read the paper."
             issues.append(self._issue(path, "human-field-changed", message))
+        try:
+            current = ReviewSnapshot.capture(note, self.snapshot_store.human_notes(body))
+        except ValidationError as error:
+            issues.append(self._issue(path, "human-notes-invalid", str(error)))
+        else:
+            if current.human_notes_sha256 != baseline.human_notes_sha256:
+                issues.append(
+                    self._issue(
+                        path,
+                        "human-notes-changed",
+                        "Protected Human notes content changed during the agent workflow.",
+                    )
+                )
         return issues
 
-    def _review_issues(self, path: Path, note: PaperNote, body: str) -> list[ValidationIssue]:
+    def _review_issues(
+        self, path: Path, note: PaperNote, body: str, has_review: bool
+    ) -> list[ValidationIssue]:
         issues: list[ValidationIssue] = []
         review_text = self._managed_content(body, "AI_REVIEW")
         has_review_text = review_text is not None and review_text.strip() not in {
             "",
             _NO_REVIEW_PLACEHOLDER,
         }
-        has_review = has_review_text or note.ai_review_status in {"reviewed", "outdated"}
         if has_review and not self._present(note.ai_review_agent):
             issues.append(
                 self._issue(
@@ -307,15 +331,36 @@ class ValidationService:
                         "ai_review_status is reviewed but the managed AI review block is empty.",
                     )
                 )
-        elif has_review_text and note.ai_review_status == "not-reviewed":
+            elif review_text is not None:
+                issues.extend(
+                    self._issue(path, violation.code, violation.message)
+                    for violation in validate_managed_review(note, review_text)
+                )
+        elif has_review and note.ai_review_status not in {"reviewed", "outdated"}:
             issues.append(
                 self._issue(
                     path,
                     "review-status-inconsistent",
-                    "The managed AI review block has content but status is not-reviewed.",
+                    "AI review content or metadata exists under a non-review status.",
                 )
             )
         return issues
+
+    def _has_review(self, note: PaperNote, body: str) -> bool:
+        review_text = self._managed_content(body, "AI_REVIEW")
+        has_review_text = review_text is not None and review_text.strip() not in {
+            "",
+            _NO_REVIEW_PLACEHOLDER,
+        }
+        has_metadata = any(self._present(getattr(note, field)) for field in _REVIEW_METADATA_FIELDS)
+        return bool(
+            has_review_text
+            or has_metadata
+            or note.ai_review_status in {"reviewed", "outdated"}
+            or note.ai_review_version > 0
+            or note.ai_applied_tags
+            or note.ai_suggested_tags
+        )
 
     def _tag_issues(
         self, path: Path, note: PaperNote, registry_tags: frozenset[str] | None
@@ -400,13 +445,20 @@ class ValidationService:
                     )
         return issues
 
-    def _extraction_issues(self, path: Path, note: PaperNote) -> list[ValidationIssue]:
-        if note.ai_review_scope != "full-text" or note.ai_review_status not in {
-            "reviewed",
-            "outdated",
-        }:
+    def _extraction_issues(
+        self, path: Path, note: PaperNote, has_review: bool
+    ) -> list[ValidationIssue]:
+        if note.ai_review_scope != "full-text" or not has_review:
             return []
         cache_path = self.settings.paper_text_dir / path.name
+        if not self._safe_root(self.settings.paper_text_dir):
+            return [
+                self._issue(
+                    cache_path,
+                    "extraction-cache-unsafe",
+                    "Extraction-cache directory resolves outside the vault.",
+                )
+            ]
         if not cache_path.is_file():
             return [
                 self._issue(
@@ -415,9 +467,17 @@ class ValidationService:
                     f"Full-text review has no extraction cache at {self._display(cache_path)}.",
                 )
             ]
+        if not self._safe_child_file(cache_path, self.settings.paper_text_dir):
+            return [
+                self._issue(
+                    cache_path,
+                    "extraction-cache-unsafe",
+                    "Extraction cache is a symlink or resolves outside its cache directory.",
+                )
+            ]
 
         try:
-            metadata = self._read_extraction_metadata(cache_path)
+            metadata, cache_body = self._read_extraction_metadata(cache_path)
         except ValidationError as error:
             return [self._issue(cache_path, "extraction-cache-invalid", str(error))]
 
@@ -444,16 +504,39 @@ class ValidationService:
                     "Extraction recorded failed pages but review coverage is complete.",
                 )
             )
+        markers = tuple(int(page) for page in _CACHE_PAGE_MARKER.findall(cache_body))
+        if markers != tuple(range(1, metadata.pages + 1)):
+            issues.append(
+                self._issue(
+                    cache_path,
+                    "extraction-cache-pages-invalid",
+                    "Extraction cache page markers do not match its page metadata.",
+                )
+            )
+        without_markers = _CACHE_PAGE_MARKER.sub("", cache_body)
+        if not without_markers.strip():
+            issues.append(
+                self._issue(
+                    cache_path,
+                    "extraction-cache-empty",
+                    "Extraction cache contains no reviewable text.",
+                )
+            )
         return issues
 
     def _registry_tags(self) -> frozenset[str]:
+        path = self.settings.tag_registry_path
+        if not self._safe_child_file(path, path.parent):
+            raise ValidationError(
+                f"{path}: tag registry is missing, is a symlink, or resolves outside the vault"
+            )
         return frozenset(parse_tag_registry(self.settings.tag_registry_path).names)
 
     @staticmethod
     def _read_raw_document(path: Path) -> _RawDocument:
         try:
             text = path.read_text(encoding="utf-8")
-        except OSError as error:
+        except (OSError, UnicodeError) as error:
             raise MarkdownParseError(f"{path}: unable to read note: {error}") from error
         if not text.startswith("---\n"):
             raise MarkdownParseError(f"{path}: frontmatter must start with ---")
@@ -462,23 +545,9 @@ class ValidationService:
             raise MarkdownParseError(f"{path}: frontmatter is missing its closing ---")
         raw = text[4:closing]
         try:
-            node = yaml.compose(raw, Loader=yaml.SafeLoader)
-            if isinstance(node, yaml.MappingNode):
-                keys = [
-                    key.value
-                    for key, _value in node.value
-                    if isinstance(key, yaml.ScalarNode) and isinstance(key.value, str)
-                ]
-                duplicates = sorted({key for key in keys if keys.count(key) > 1})
-                if duplicates:
-                    raise MarkdownParseError(
-                        f"{path}: duplicate frontmatter field(s): {', '.join(duplicates)}"
-                    )
-            metadata = yaml.safe_load(raw)
-        except yaml.YAMLError as error:
+            metadata = ValidationService._strict_yaml_mapping(raw)
+        except ValueError as error:
             raise MarkdownParseError(f"{path}: invalid YAML frontmatter: {error}") from error
-        if not isinstance(metadata, dict) or not all(isinstance(key, str) for key in metadata):
-            raise MarkdownParseError(f"{path}: frontmatter must be a mapping")
         return _RawDocument(metadata, text[closing + 5 :])
 
     def _managed_block_issues(self, path: Path, body: str) -> list[ValidationIssue]:
@@ -526,10 +595,10 @@ class ValidationService:
         return body[opening.end() : closing.start()]
 
     @staticmethod
-    def _read_extraction_metadata(path: Path) -> ExtractionMetadata:
+    def _read_extraction_metadata(path: Path) -> tuple[ExtractionMetadata, str]:
         try:
             text = path.read_text(encoding="utf-8")
-        except OSError as error:
+        except (OSError, UnicodeError) as error:
             raise ValidationError(f"{path}: unable to read extraction cache: {error}") from error
         if not text.startswith("---\n"):
             raise ValidationError(f"{path}: extraction cache is missing YAML frontmatter")
@@ -537,10 +606,31 @@ class ValidationService:
         if closing < 0:
             raise ValidationError(f"{path}: extraction cache frontmatter is not closed")
         try:
-            metadata = yaml.safe_load(text[4:closing])
-            return ExtractionMetadata.model_validate(metadata)
-        except (yaml.YAMLError, PydanticValidationError) as error:
+            raw = ValidationService._strict_yaml_mapping(text[4:closing])
+            metadata = ExtractionMetadata.model_validate(raw)
+        except (ValueError, PydanticValidationError) as error:
             raise ValidationError(f"{path}: invalid extraction metadata: {error}") from error
+        return metadata, text[closing + 5 :]
+
+    @staticmethod
+    def _strict_yaml_mapping(raw: str) -> dict[str, Any]:
+        try:
+            node = yaml.compose(raw, Loader=yaml.SafeLoader)
+            if isinstance(node, yaml.MappingNode):
+                keys = [
+                    key.value
+                    for key, _value in node.value
+                    if isinstance(key, yaml.ScalarNode) and isinstance(key.value, str)
+                ]
+                duplicates = sorted({key for key in keys if keys.count(key) > 1})
+                if duplicates:
+                    raise ValueError(f"duplicate field(s): {', '.join(duplicates)}")
+            metadata = yaml.safe_load(raw)
+        except yaml.YAMLError as error:
+            raise ValueError(str(error)) from error
+        if not isinstance(metadata, dict) or not all(isinstance(key, str) for key in metadata):
+            raise ValueError("frontmatter must be a mapping")
+        return metadata
 
     @staticmethod
     def _present(value: object) -> bool:
@@ -554,7 +644,8 @@ class ValidationService:
         *,
         severity: ValidationSeverity = ValidationSeverity.ERROR,
     ) -> ValidationIssue:
-        return ValidationIssue(self._display(path), severity, code, message)
+        one_line = " ".join(message.split())
+        return ValidationIssue(self._display(path), severity, code, one_line)
 
     def _display(self, path: Path) -> Path:
         try:
@@ -563,9 +654,29 @@ class ValidationService:
             return path
 
     def _safe_note_path(self, path: Path) -> bool:
+        if not self._safe_root(self.markdown_store.papers_dir):
+            return False
+        return self._safe_child_file(path, self.markdown_store.papers_dir)
+
+    def _safe_root(self, root: Path) -> bool:
         try:
-            root = self.markdown_store.papers_dir.resolve()
+            resolved = root.resolve()
+            vault = self.settings.vault_path.resolve()
+        except OSError:
+            return False
+        return not root.is_symlink() and resolved.is_relative_to(vault)
+
+    def _safe_child_file(self, path: Path, root: Path) -> bool:
+        if not self._safe_root(root):
+            return False
+        try:
+            resolved_root = root.resolve()
             resolved = path.resolve()
         except OSError:
             return False
-        return resolved.parent == root and path.suffix == ".md"
+        return (
+            not path.is_symlink()
+            and path.is_file()
+            and resolved.parent == resolved_root
+            and path.suffix == ".md"
+        )
