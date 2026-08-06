@@ -1,6 +1,7 @@
 """Command-line entry point for the research knowledge base."""
 
 import logging
+from pathlib import Path
 from typing import Annotated, cast
 
 import typer
@@ -11,6 +12,7 @@ from research_kb.better_bibtex import BetterBibTeXClient
 from research_kb.config import Settings
 from research_kb.doctor_service import CheckStatus, DoctorService
 from research_kb.exceptions import ResearchKBError
+from research_kb.extraction_service import ExtractionResult, ExtractionService, ReviewContext
 from research_kb.logging_config import LOGGER_NAME, configure_logging
 from research_kb.markdown_store import MarkdownStore
 from research_kb.sync_service import SyncAction, SyncReport, SyncService
@@ -187,11 +189,122 @@ def sync(
     _print_sync_report(report)
 
 
+@app.command()
+def extract(
+    ctx: typer.Context,
+    citekey: Annotated[str, typer.Argument(help="Citation key of the paper to extract.")],
+    force: Annotated[
+        bool, typer.Option("--force", help="Regenerate text even when the cache is current.")
+    ] = False,
+) -> None:
+    """Extract one paper's PDF into a page-aware Markdown cache."""
+    settings = cast(Settings, ctx.obj["settings"])
+    logger = logging.getLogger(LOGGER_NAME)
+    try:
+        with ZoteroClient(settings.zotero_local_api) as zotero_client:
+            result = ExtractionService(
+                settings,
+                zotero_client,
+                MarkdownStore(settings.papers_dir),
+            ).extract(citekey, force=force)
+    except ResearchKBError as error:
+        logger.error("extract_failed citekey=%s error=%s", citekey, error)
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    _log_extraction_result(logger, result)
+    _print_extraction_result(result)
+
+
+@app.command("review-context")
+def review_context(
+    ctx: typer.Context,
+    citekey: Annotated[str, typer.Argument(help="Citation key of the paper to review.")],
+) -> None:
+    """Ensure text is extracted and print the four files needed for review."""
+    settings = cast(Settings, ctx.obj["settings"])
+    logger = logging.getLogger(LOGGER_NAME)
+    try:
+        with ZoteroClient(settings.zotero_local_api) as zotero_client:
+            context = ExtractionService(
+                settings,
+                zotero_client,
+                MarkdownStore(settings.papers_dir),
+            ).review_context(citekey)
+    except ResearchKBError as error:
+        logger.error("review_context_failed citekey=%s error=%s", citekey, error)
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    logger.info(
+        "review_context_ready citekey=%s extracted_paper=%s",
+        citekey,
+        context.extracted_paper,
+    )
+    _print_review_context(context, settings.vault_path)
+
+
 def _sync_error(logger: logging.Logger, message: str) -> None:
     """Emit one consistent CLI error before constructing service clients."""
     logger.error("sync_failed error=%s", message)
     typer.echo(f"Error: {message}", err=True)
     raise typer.Exit(code=1)
+
+
+def _log_extraction_result(logger: logging.Logger, result: ExtractionResult) -> None:
+    """Record cache and quality details in a machine-searchable form."""
+    diagnostics = result.diagnostics
+    logger.info(
+        "extract_complete citekey=%s status=%s cache_hit=%s pages=%s total_characters=%s "
+        "empty_pages=%s low_text_fraction=%.3f output=%s",
+        result.citekey,
+        result.status,
+        result.cache_hit,
+        diagnostics.pages,
+        diagnostics.total_characters,
+        len(diagnostics.empty_pages),
+        diagnostics.low_text_fraction,
+        result.output_path,
+    )
+
+
+def _print_extraction_result(result: ExtractionResult) -> None:
+    """Render all extraction-quality measures without leaking paper contents."""
+    diagnostics = result.diagnostics
+    action = "CACHED" if result.cache_hit else "EXTRACTED"
+    typer.echo(f"{action} {result.citekey} -> {result.output_path}")
+    typer.echo(f"Status: {result.status}")
+    typer.echo(f"Pages: {diagnostics.pages}")
+    per_page = ", ".join(
+        f"{page}:{characters}"
+        for page, characters in enumerate(diagnostics.characters_per_page, 1)
+    )
+    typer.echo(f"Characters per page: {per_page or 'none'}")
+    empty = ", ".join(str(page) for page in diagnostics.empty_pages)
+    typer.echo(f"Empty pages: {empty or 'none'}")
+    typer.echo(f"Total characters: {diagnostics.total_characters}")
+    typer.echo(f"Low-text fraction: {diagnostics.low_text_fraction:.1%}")
+    for warning in diagnostics.warnings:
+        typer.echo(f"Warning: {warning}")
+
+
+def _print_review_context(context: ReviewContext, vault_path: Path) -> None:
+    """Print stable vault-relative paths when possible."""
+    fields = (
+        ("Paper note", context.paper_note),
+        ("Extracted paper", context.extracted_paper),
+        ("Reading profile", context.reading_profile),
+        ("Tag registry", context.tag_registry),
+    )
+    for index, (label, path) in enumerate(fields):
+        if index:
+            typer.echo()
+        try:
+            displayed = path.relative_to(vault_path)
+        except ValueError:
+            displayed = path
+        typer.echo(f"{label}:")
+        typer.echo(str(displayed))
 
 
 def _log_sync_report(logger: logging.Logger, report: SyncReport) -> None:

@@ -31,7 +31,7 @@ anything containing Zotero credentials.
 
 ## Diagnostics
 
-Implementation steps 1 through 7 are complete. Run the local environment checks
+Implementation steps 1 through 10 are complete. Run the local environment checks
 with:
 
 ```sh
@@ -67,3 +67,28 @@ server identity changes), the command automatically falls back to a full sync
 and reports that choice. Sync updates only Zotero-owned metadata and preserves
 your human notes. Use `--full` after permanently emptying Zotero's trash when
 the installed local API does not expose its deletion log.
+
+## Extract PDF text
+
+After synchronizing an item with a locally available PDF, extract page-aware text
+with:
+
+```sh
+uv run research extract chen2025flowdas
+```
+
+The generated cache lives at `.research/paper-text/<citekey>.md` and includes
+page markers plus source and extractor provenance. Repeated runs reuse a valid
+cache; `--force` rebuilds it. The command reports empty pages, text volume, page
+failures, and likely scanned PDFs. OCR is intentionally outside version 0.1.
+
+To prepare the inputs for a Claude Code or Codex review, run:
+
+```sh
+uv run research review-context chen2025flowdas
+```
+
+This refreshes extraction when needed and prints the paper note, extracted text,
+reading profile, and tag registry paths. `CLAUDE.md` and `AGENTS.md` contain the
+same constrained review contract; `System/Templates/Paper.md` is the canonical
+paper-note template. Review validation is implemented in the next plan step.

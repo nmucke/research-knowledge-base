@@ -14,7 +14,13 @@ from typing import Any, Literal, Protocol
 from research_kb.config import Settings
 from research_kb.exceptions import ResearchKBError, SyncConflictError, SyncError
 from research_kb.markdown_store import MarkdownStore, PaperDocument
-from research_kb.models import PaperNote, SyncState, ZoteroItem, ZoteroItemBatch
+from research_kb.models import (
+    PaperNote,
+    SyncState,
+    ZoteroAttachment,
+    ZoteroItem,
+    ZoteroItemBatch,
+)
 from research_kb.zotero_client import ZoteroServerInfo
 
 
@@ -100,6 +106,10 @@ class _ZoteroClient(Protocol):
     def list_items(
         self, library_type: str, library_id: int, *, since: int | None = None
     ) -> ZoteroItemBatch: ...
+
+    def select_pdf_attachment(
+        self, item_key: str, *, library_type: str, library_id: int
+    ) -> ZoteroAttachment | None: ...
 
 
 class _BetterBibTeXClient(Protocol):
@@ -238,23 +248,29 @@ class SyncService:
                 self._better_bibtex_client.get_citation_key(
                     item.key, library_id=self._settings.zotero_library_id
                 ),
+                self._zotero_client.select_pdf_attachment(
+                    item.key,
+                    library_type=self._settings.zotero_library_type,
+                    library_id=self._settings.zotero_library_id,
+                ),
             )
             for item in ordered_items
         ]
-        citekeys = [citekey for _item, citekey in resolved]
+        citekeys = [citekey for _item, citekey, _attachment in resolved]
         if len(citekeys) != len(set(citekeys)):
             raise SyncConflictError("Better BibTeX returned one citekey for multiple Zotero items")
         try:
-            for _item, citekey in resolved:
+            for _item, citekey, _attachment in resolved:
                 self._store.note_path(citekey)
         except ValueError as exc:
             raise SyncError(f"Better BibTeX returned an unsafe citekey: {exc}") from exc
         results: list[SyncItemResult] = []
-        for item, citekey in resolved:
+        for item, citekey, attachment in resolved:
             path, document = self._match(documents, item.key, citekey)
             fresh = PaperNote.from_zotero(
                 item, citekey, server_id, library_type=self._settings.zotero_library_type
             )
+            fresh = self._with_pdf_attachment(fresh, attachment)
             if document is None:
                 target = self._store.note_path(citekey)
                 if not dry_run:
@@ -270,10 +286,15 @@ class SyncService:
                 if not dry_run:
                     target = self._store.rename(path, citekey)
             updates = self._zotero_updates(original, fresh)
-            changed_review = (
-                original.ai_review_status == "reviewed"
-                and original.ai_review_scope == "abstract-only"
-                and (original.title != fresh.title or original.abstract != fresh.abstract)
+            abstract_changed = original.ai_review_scope == "abstract-only" and (
+                original.title != fresh.title or original.abstract != fresh.abstract
+            )
+            attachment_changed = (
+                original.ai_review_scope in {"partial-text", "full-text"}
+                and original.pdf_attachment_key != fresh.pdf_attachment_key
+            )
+            changed_review = original.ai_review_status == "reviewed" and (
+                abstract_changed or attachment_changed
             )
             reset_missing = original.zotero_missing
             if not dry_run:
@@ -304,6 +325,21 @@ class SyncService:
                 )
             )
         return results
+
+    def _with_pdf_attachment(
+        self, note: PaperNote, attachment: ZoteroAttachment | None
+    ) -> PaperNote:
+        """Attach Zotero's stable open-PDF URI to newly read metadata."""
+        if attachment is None:
+            return note
+        if self._settings.zotero_library_type == "user":
+            uri = f"zotero://open-pdf/library/items/{attachment.key}"
+        else:
+            uri = (
+                f"zotero://open-pdf/groups/{self._settings.zotero_library_id}"
+                f"/items/{attachment.key}"
+            )
+        return note.model_copy(update={"pdf_attachment_key": attachment.key, "pdf_uri": uri})
 
     @staticmethod
     def _zotero_updates(old: PaperNote, new: PaperNote) -> dict[str, Any]:

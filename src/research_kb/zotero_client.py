@@ -4,19 +4,21 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from typing import Self, cast
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote_to_bytes, urlsplit
 
 import httpx
 
 from research_kb.exceptions import (
+    PDFNotFoundError,
     ZoteroInvalidItemReferenceError,
     ZoteroInvalidResponseError,
     ZoteroItemNotFoundError,
     ZoteroUnavailableError,
     ZoteroUnsupportedItemError,
 )
-from research_kb.models import ZoteroCreator, ZoteroItem, ZoteroItemBatch
+from research_kb.models import ZoteroAttachment, ZoteroCreator, ZoteroItem, ZoteroItemBatch
 
 SUPPORTED_ITEM_TYPES = frozenset(
     {
@@ -31,6 +33,7 @@ SUPPORTED_ITEM_TYPES = frozenset(
     }
 )
 _ITEM_KEY_PATTERN = re.compile(r"^[A-Z0-9]{8}$")
+_INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,117 @@ class ZoteroClient:
                 f"Zotero returned invalid JSON for item {zotero_key!r}."
             ) from error
         return self._parse_item(payload)
+
+    def get_child_attachments(
+        self, item_key: str, *, library_type: str, library_id: int
+    ) -> tuple[ZoteroAttachment, ...]:
+        """Return non-deleted PDF children in Zotero's child order."""
+        self._validate_item_reference(item_key, library_type, library_id)
+        endpoint = f"{library_type}s/{library_id}/items/{item_key}/children"
+        expected_url = self._client.build_request("GET", endpoint).url
+        params = {"limit": 100, "start": 0}
+        next_start: int | None = 0
+        attachments: list[ZoteroAttachment] = []
+
+        while next_start is not None:
+            params["start"] = next_start
+            try:
+                response = self._client.get(endpoint, params=params)
+                if response.status_code == httpx.codes.NOT_FOUND:
+                    raise ZoteroItemNotFoundError(
+                        f"Zotero item {item_key!r} was not found in "
+                        f"{library_type} library {library_id}."
+                    )
+                response.raise_for_status()
+            except ZoteroItemNotFoundError:
+                raise
+            except httpx.HTTPError as error:
+                raise ZoteroUnavailableError(
+                    f"Could not fetch child attachments for Zotero item {item_key!r}: {error}."
+                ) from error
+
+            try:
+                payload: object = response.json()
+            except ValueError as error:
+                raise ZoteroInvalidResponseError(
+                    f"Zotero returned invalid JSON for children of item {item_key!r}."
+                ) from error
+            for raw_child in self._list(payload, "item children"):
+                attachment = self._parse_attachment(raw_child, item_key)
+                if attachment is not None:
+                    attachments.append(attachment)
+
+            next_link = response.links.get("next")
+            if next_link is None:
+                next_start = None
+            else:
+                next_url = next_link.get("url")
+                if not isinstance(next_url, str):
+                    raise ZoteroInvalidResponseError(
+                        "Zotero response has an invalid pagination Link."
+                    )
+                next_start = self._next_start(next_url, response.url, expected_url, next_start)
+
+        return tuple(attachments)
+
+    def select_pdf_attachment(
+        self, item_key: str, *, library_type: str, library_id: int
+    ) -> ZoteroAttachment | None:
+        """Select the primary or newest remaining locally available PDF child."""
+        attachments = self.get_child_attachments(
+            item_key, library_type=library_type, library_id=library_id
+        )
+        if not attachments:
+            return None
+
+        primary, *remaining = attachments
+        if self._attachment_is_available(primary, library_type, library_id):
+            return primary
+
+        available = [
+            attachment
+            for attachment in remaining
+            if self._attachment_is_available(attachment, library_type, library_id)
+        ]
+        # Python's stable sort retains Zotero child order for equal timestamps.
+        available.sort(
+            key=lambda attachment: datetime.fromisoformat(
+                attachment.date_modified.replace("Z", "+00:00")
+            ),
+            reverse=True,
+        )
+        return available[0] if available else None
+
+    def resolve_attachment_path(
+        self, attachment_key: str, *, library_type: str, library_id: int
+    ) -> Path:
+        """Resolve Zotero's plain-text local file URL to an existing PDF path."""
+        self._validate_item_reference(attachment_key, library_type, library_id)
+        endpoint = f"{library_type}s/{library_id}/items/{attachment_key}/file/view/url"
+        try:
+            response = self._client.get(endpoint)
+            if response.status_code == httpx.codes.NOT_FOUND:
+                raise PDFNotFoundError(
+                    f"Zotero attachment {attachment_key!r} has no available local file."
+                )
+            response.raise_for_status()
+        except PDFNotFoundError:
+            raise
+        except httpx.HTTPError as error:
+            raise ZoteroUnavailableError(
+                f"Could not resolve Zotero attachment {attachment_key!r}: {error}."
+            ) from error
+
+        path = self._local_file_path(response.text, attachment_key)
+        if not path.exists():
+            raise PDFNotFoundError(
+                f"The local file for Zotero attachment {attachment_key!r} does not exist."
+            )
+        if not path.is_file():
+            raise PDFNotFoundError(
+                f"The local path for Zotero attachment {attachment_key!r} is not a file."
+            )
+        return path
 
     def list_items(
         self,
@@ -251,6 +365,57 @@ class ZoteroClient:
         )
 
     @classmethod
+    def _parse_attachment(cls, payload: object, expected_parent: str) -> ZoteroAttachment | None:
+        """Validate an attachment child, excluding notes and unusable PDF metadata."""
+        item = cls._mapping(payload, "child item")
+        data = cls._mapping(item.get("data"), "child item.data")
+        item_type = cls._required_string(data, "itemType", "child item.data")
+        if item_type != "attachment":
+            return None
+
+        deleted = data.get("deleted")
+        if deleted is not None and not isinstance(deleted, bool):
+            raise ZoteroInvalidResponseError("Zotero response has invalid child item.data.deleted.")
+        content_type = cls._optional_string(data, "contentType", "child item.data")
+        if deleted or content_type != "application/pdf":
+            return None
+
+        parent_item = cls._required_string(data, "parentItem", "child item.data")
+        if not _ITEM_KEY_PATTERN.fullmatch(parent_item) or parent_item != expected_parent:
+            raise ZoteroInvalidResponseError(
+                "Zotero response has invalid child item.data.parentItem."
+            )
+        version = cls._required_integer(item, "version", "child item")
+        if version < 0:
+            raise ZoteroInvalidResponseError("Zotero response has invalid child item.version.")
+        mtime = data.get("mtime")
+        if mtime is not None and (
+            isinstance(mtime, bool) or not isinstance(mtime, int) or mtime < 0
+        ):
+            raise ZoteroInvalidResponseError("Zotero response has invalid child item.data.mtime.")
+        date_modified = cls._optional_timestamp(data, "dateModified", "child item.data")
+        if (
+            date_modified is None
+            or "T" not in date_modified
+            or datetime.fromisoformat(date_modified.replace("Z", "+00:00")).tzinfo is None
+        ):
+            raise ZoteroInvalidResponseError(
+                "Zotero response has invalid child item.data.dateModified."
+            )
+
+        return ZoteroAttachment(
+            key=cls._response_item_key(item),
+            version=version,
+            parent_item=parent_item,
+            content_type="application/pdf",
+            filename=cls._optional_string(data, "filename", "child item.data"),
+            link_mode=cls._required_string(data, "linkMode", "child item.data"),
+            title=cls._optional_string(data, "title", "child item.data"),
+            date_modified=date_modified,
+            mtime=mtime,
+        )
+
+    @classmethod
     def _classify_batch_item(cls, payload: object) -> tuple[ZoteroItem | None, str | None]:
         """Identify valid objects that are intentionally outside paper syncing."""
         item = cls._mapping(payload, "item")
@@ -313,6 +478,58 @@ class ZoteroClient:
                 )
             keys.append(raw_key)
         return tuple(keys)
+
+    def _attachment_is_available(
+        self, attachment: ZoteroAttachment, library_type: str, library_id: int
+    ) -> bool:
+        """Check local availability without hiding connectivity failures."""
+        try:
+            self.resolve_attachment_path(
+                attachment.key, library_type=library_type, library_id=library_id
+            )
+        except PDFNotFoundError:
+            return False
+        return True
+
+    @staticmethod
+    def _local_file_path(value: str, attachment_key: str) -> Path:
+        """Parse a safe absolute local path from Zotero's file URL response."""
+        raw_url = value.strip()
+        if not raw_url or _INVALID_PERCENT_ESCAPE.search(raw_url):
+            raise PDFNotFoundError(
+                f"Zotero returned a malformed file URL for attachment {attachment_key!r}."
+            )
+        try:
+            parsed = urlsplit(raw_url)
+        except ValueError:
+            raise PDFNotFoundError(
+                f"Zotero returned a malformed file URL for attachment {attachment_key!r}."
+            ) from None
+        if (
+            parsed.scheme.lower() != "file"
+            or parsed.netloc not in {"", "localhost"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise PDFNotFoundError(
+                f"Zotero attachment {attachment_key!r} does not resolve to a local file URL."
+            )
+        try:
+            decoded = unquote_to_bytes(parsed.path).decode("utf-8")
+        except UnicodeDecodeError:
+            raise PDFNotFoundError(
+                f"Zotero returned a malformed file URL for attachment {attachment_key!r}."
+            ) from None
+        if not decoded or "\x00" in decoded or decoded.startswith("//"):
+            raise PDFNotFoundError(
+                f"Zotero attachment {attachment_key!r} resolves to an invalid local path."
+            )
+        path = Path(decoded)
+        if not path.is_absolute():
+            raise PDFNotFoundError(
+                f"Zotero attachment {attachment_key!r} resolves to an invalid local path."
+            )
+        return path
 
     @staticmethod
     def _next_start(
