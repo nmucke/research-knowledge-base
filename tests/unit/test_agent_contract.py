@@ -6,7 +6,7 @@ from research_kb.models import PaperNote
 
 ROOT = Path(__file__).parents[2]
 AGENT_FILES = (ROOT / "AGENTS.md", ROOT / "CLAUDE.md")
-TEMPLATE = ROOT / "System" / "Templates" / "Paper.md"
+TEMPLATE = ROOT / "vault" / "System" / "Templates" / "Paper.md"
 
 
 def _frontmatter(text: str) -> dict[str, object]:
@@ -30,8 +30,8 @@ def test_agent_instructions_are_equivalent_and_executable() -> None:
     for required_input in (
         "paper note",
         "extracted paper text",
-        "System/reading-profile.md",
-        "System/tag-registry.md",
+        "vault/System/reading-profile.md",
+        "vault/System/tag-registry.md",
     ):
         assert required_input in contract
 

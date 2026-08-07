@@ -36,10 +36,10 @@ class CLIPathResolver:
 
 
 def _vault(tmp_path: Path) -> None:
-    (tmp_path / "System").mkdir()
-    (tmp_path / "System" / "reading-profile.md").write_text("profile", encoding="utf-8")
-    (tmp_path / "System" / "tag-registry.md").write_text("tags", encoding="utf-8")
-    store = MarkdownStore(tmp_path / "Literature" / "Papers")
+    (tmp_path / "vault" / "System").mkdir(parents=True)
+    (tmp_path / "vault" / "System" / "reading-profile.md").write_text("profile", encoding="utf-8")
+    (tmp_path / "vault" / "System" / "tag-registry.md").write_text("tags", encoding="utf-8")
+    store = MarkdownStore(tmp_path / "vault" / "Literature" / "Papers")
     store.create(
         PaperNote(
             zotero_key="ABCD1234",
@@ -98,16 +98,16 @@ def test_review_context_auto_extracts_and_prints_spec_paths(
     assert result.exit_code == 0
     assert result.stdout.splitlines() == [
         "Paper note:",
-        "Literature/Papers/doeUseful2026.md",
+        "vault/Literature/Papers/doeUseful2026.md",
         "",
         "Extracted paper:",
         ".research/paper-text/doeUseful2026.md",
         "",
         "Reading profile:",
-        "System/reading-profile.md",
+        "vault/System/reading-profile.md",
         "",
         "Tag registry:",
-        "System/tag-registry.md",
+        "vault/System/tag-registry.md",
     ]
     assert (tmp_path / ".research" / "paper-text" / "doeUseful2026.md").exists()
     assert (

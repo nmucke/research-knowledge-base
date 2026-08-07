@@ -82,7 +82,7 @@ def _settings(
     tmp_path: Path, *, library_type: str = "user", library_id: int = 0
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        papers_dir=tmp_path / "Literature" / "Papers",
+        papers_dir=tmp_path / "vault" / "Literature" / "Papers",
         research_dir=tmp_path / ".research",
         zotero_library_type=library_type,
         zotero_library_id=library_id,

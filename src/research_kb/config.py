@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     )
 
     research_vault_path: DirectoryPath = Path(".")
+    research_obsidian_dir: Path = Path("vault")
     zotero_local_api: str = "http://localhost:23119/api"
     better_bibtex_rpc: str = "http://localhost:23119/better-bibtex/json-rpc"
     zotero_library_type: LibraryType = "user"
@@ -45,6 +46,19 @@ class Settings(BaseSettings):
         if url.host not in LOOPBACK_HOSTS:
             raise ValueError("local service URLs must use a loopback host")
         return str(url).rstrip("/")
+
+    @field_validator("research_obsidian_dir", mode="before")
+    @classmethod
+    def validate_obsidian_dir(cls, value: object) -> object:
+        """Reject an empty or upward-traversing Obsidian vault location."""
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("the Obsidian vault directory must not be empty")
+        directory = Path(str(value))
+        if not directory.is_absolute() and ".." in directory.parts:
+            raise ValueError("the Obsidian vault directory must not traverse above the project")
+        return directory
 
     @field_validator("research_log_level", mode="before")
     @classmethod
@@ -102,23 +116,30 @@ class Settings(BaseSettings):
 
     @property
     def vault_path(self) -> Path:
+        """Project root holding generated state, tooling, and the Obsidian vault."""
         return Path(self.research_vault_path).resolve()
 
     @property
+    def obsidian_vault_path(self) -> Path:
+        """Root of the Obsidian vault; the only directory opened in Obsidian."""
+        directory = Path(self.research_obsidian_dir)
+        return directory.resolve() if directory.is_absolute() else self.vault_path / directory
+
+    @property
     def papers_dir(self) -> Path:
-        return self.vault_path / "Literature" / "Papers"
+        return self.obsidian_vault_path / "Literature" / "Papers"
 
     @property
     def templates_dir(self) -> Path:
-        return self.vault_path / "System" / "Templates"
+        return self.obsidian_vault_path / "System" / "Templates"
 
     @property
     def tag_registry_path(self) -> Path:
-        return self.vault_path / "System" / "tag-registry.md"
+        return self.obsidian_vault_path / "System" / "tag-registry.md"
 
     @property
     def reading_profile_path(self) -> Path:
-        return self.vault_path / "System" / "reading-profile.md"
+        return self.obsidian_vault_path / "System" / "reading-profile.md"
 
     @property
     def research_dir(self) -> Path:

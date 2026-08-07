@@ -22,7 +22,7 @@ def _note(citekey: str = "lovelace2026notes") -> PaperNote:
 
 
 def test_render_parse_and_create_use_the_standard_template(tmp_path: Path) -> None:
-    store = MarkdownStore(tmp_path / "Literature" / "Papers")
+    store = MarkdownStore(tmp_path / "vault" / "Literature" / "Papers")
     path = store.create(_note())
 
     assert path == store.note_path("lovelace2026notes")

@@ -26,7 +26,7 @@ def _settings(tmp_path: Path, **updates: object) -> Settings:
 
 
 def _registry(tmp_path: Path) -> None:
-    path = tmp_path / "System" / "tag-registry.md"
+    path = tmp_path / "vault" / "System" / "tag-registry.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "# Tag registry\n\n### `domain/weather`\n\nWeather research.\n\n"
@@ -36,7 +36,7 @@ def _registry(tmp_path: Path) -> None:
 
 
 def _store(tmp_path: Path) -> MarkdownStore:
-    return MarkdownStore(tmp_path / "Literature" / "Papers")
+    return MarkdownStore(tmp_path / "vault" / "Literature" / "Papers")
 
 
 def _note(citekey: str = "doeUseful2026", **updates: object) -> PaperNote:
@@ -295,7 +295,7 @@ def test_whole_vault_continues_after_malformed_note_and_target_errors_are_clear(
 
 
 def test_invalid_registry_is_reported_once_without_hiding_note_errors(tmp_path: Path) -> None:
-    registry = tmp_path / "System" / "tag-registry.md"
+    registry = tmp_path / "vault" / "System" / "tag-registry.md"
     registry.parent.mkdir(parents=True)
     registry.write_text("### `unknown/tag`\n\nDefinition.\n", encoding="utf-8")
     store = _store(tmp_path)
@@ -469,7 +469,7 @@ def test_symlinked_roots_registry_and_cache_are_rejected(
     outside.mkdir()
     outside_store = MarkdownStore(outside)
     outside_store.create(_note())
-    papers = tmp_path / "Literature" / "Papers"
+    papers = tmp_path / "vault" / "Literature" / "Papers"
     papers.parent.mkdir(parents=True, exist_ok=True)
     try:
         papers.symlink_to(outside, target_is_directory=True)
@@ -484,7 +484,7 @@ def test_symlinked_roots_registry_and_cache_are_rejected(
     store = _store(tmp_path)
     path = store.create(_reviewed_note())
     _add_review(store, path)
-    registry = tmp_path / "System" / "tag-registry.md"
+    registry = tmp_path / "vault" / "System" / "tag-registry.md"
     registry.unlink()
     external_registry = outside / "tag-registry.md"
     external_registry.write_text(

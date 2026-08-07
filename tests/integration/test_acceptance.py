@@ -29,7 +29,7 @@ from research_kb.markdown_store import MarkdownStore
 from research_kb.zotero_client import ZoteroClient
 
 REPO_ROOT = Path(__file__).parents[2]
-DASHBOARDS_DIR = REPO_ROOT / "Literature" / "Dashboards"
+DASHBOARDS_DIR = REPO_ROOT / "vault" / "Literature" / "Dashboards"
 
 SERVER_ID = "acceptance-zotero"
 LOCAL_WRITE_KEY = "acceptance-local-write-key"
@@ -253,14 +253,14 @@ def _paper_pages(marker: str) -> tuple[str, ...]:
 
 
 @pytest.fixture
-def vault(tmp_path: Path) -> Path:
-    """Build a vault that matches a clean checkout of the repository."""
-    root = tmp_path / "vault"
-    (root / "Literature" / "Papers").mkdir(parents=True)
-    (root / "Literature" / "Dashboards").mkdir(parents=True)
+def project_root(tmp_path: Path) -> Path:
+    """Build a project checkout, including its nested Obsidian vault."""
+    root = tmp_path / "project"
+    (root / "vault" / "Literature" / "Papers").mkdir(parents=True)
+    (root / "vault" / "Literature" / "Dashboards").mkdir(parents=True)
     for dashboard in DASHBOARDS_DIR.glob("*.base"):
-        shutil.copy(dashboard, root / "Literature" / "Dashboards" / dashboard.name)
-    shutil.copytree(REPO_ROOT / "System", root / "System")
+        shutil.copy(dashboard, root / "vault" / "Literature" / "Dashboards" / dashboard.name)
+    shutil.copytree(REPO_ROOT / "vault" / "System", root / "vault" / "System")
     (root / "references.bib").write_text("% Better BibTeX keep-updated export\n", encoding="utf-8")
     return root
 
@@ -285,10 +285,10 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeZoteroLibrar
     return fake
 
 
-def _env(vault: Path) -> dict[str, str]:
+def _env(project_root: Path) -> dict[str, str]:
     """Pin every setting so a developer's local `.env` cannot change the run."""
     return {
-        "RESEARCH_VAULT_PATH": str(vault),
+        "RESEARCH_VAULT_PATH": str(project_root),
         "ZOTERO_LOCAL_API": "http://localhost:23119/api",
         "BETTER_BIBTEX_RPC": "http://localhost:23119/better-bibtex/json-rpc",
         "ZOTERO_LIBRARY_TYPE": "user",
@@ -301,8 +301,8 @@ def _env(vault: Path) -> dict[str, str]:
     }
 
 
-def _run(vault: Path, *arguments: str, exit_code: int = 0) -> Result:
-    result = runner.invoke(cli.app, list(arguments), env=_env(vault))
+def _run(project_root: Path, *arguments: str, exit_code: int = 0) -> Result:
+    result = runner.invoke(cli.app, list(arguments), env=_env(project_root))
     assert result.exit_code == exit_code, (
         f"research {' '.join(arguments)} exited {result.exit_code}: "
         f"{result.output}{result.exception!r}"
@@ -380,17 +380,17 @@ def _dashboard_properties() -> set[str]:
     return properties
 
 
-def test_version_0_1_acceptance_workflow(vault: Path, library: FakeZoteroLibrary) -> None:
-    store = MarkdownStore(vault / "Literature" / "Papers")
+def test_version_0_1_acceptance_workflow(project_root: Path, library: FakeZoteroLibrary) -> None:
+    store = MarkdownStore(project_root / "vault" / "Literature" / "Papers")
     note_path = store.note_path(CITEKEY)
 
     # 1. The environment is healthy before any paper is processed.
-    doctor = _run(vault, "doctor")
+    doctor = _run(project_root, "doctor")
     assert "PASS" in doctor.output
     assert "FAIL" not in doctor.output
 
     # 2. `research sync` turns the new Zotero item into a valid Markdown note.
-    created = _run(vault, "sync")
+    created = _run(project_root, "sync")
     assert f"CREATE {ITEM_KEY} {CITEKEY}" in created.output
     assert note_path.is_file()
     note = store.parse(note_path).note
@@ -414,23 +414,23 @@ def test_version_0_1_acceptance_workflow(vault: Path, library: FakeZoteroLibrary
     )
 
     # 4. `research extract` produces readable, page-aware text.
-    extracted = _run(vault, "extract", CITEKEY)
+    extracted = _run(project_root, "extract", CITEKEY)
     assert extracted.output.startswith(f"EXTRACTED {CITEKEY} ->")
     assert "Status: complete" in extracted.output
-    cache_path = vault / ".research" / "paper-text" / f"{CITEKEY}.md"
+    cache_path = project_root / ".research" / "paper-text" / f"{CITEKEY}.md"
     cache_text = cache_path.read_text(encoding="utf-8")
     assert "<!-- PAGE 1 -->" in cache_text
     assert "<!-- PAGE 3 -->" in cache_text
     assert "First version" in cache_text
-    assert _run(vault, "extract", CITEKEY).output.startswith(f"CACHED {CITEKEY} ->")
+    assert _run(project_root, "extract", CITEKEY).output.startswith(f"CACHED {CITEKEY} ->")
 
     # 5. `research review-context` names the four files an agent must read.
-    context = _run(vault, "review-context", CITEKEY)
-    assert "Literature/Papers/lovelaceAcceptance2026.md" in context.output
+    context = _run(project_root, "review-context", CITEKEY)
+    assert "vault/Literature/Papers/lovelaceAcceptance2026.md" in context.output
     assert ".research/paper-text/lovelaceAcceptance2026.md" in context.output
-    assert "System/reading-profile.md" in context.output
-    assert "System/tag-registry.md" in context.output
-    snapshot_path = vault / ".research" / "review-snapshots" / f"{CITEKEY}.json"
+    assert "vault/System/reading-profile.md" in context.output
+    assert "vault/System/tag-registry.md" in context.output
+    snapshot_path = project_root / ".research" / "review-snapshots" / f"{CITEKEY}.json"
     assert snapshot_path.is_file()
 
     # 6. The agent writes only AI-owned frontmatter and the managed block.
@@ -458,7 +458,7 @@ def test_version_0_1_acceptance_workflow(vault: Path, library: FakeZoteroLibrary
     store.replace_managed_block(note_path, "AI_REVIEW", _review_block(review_date))
 
     # 7. Validation passes and the protected-content baseline is consumed.
-    validated = _run(vault, "validate", CITEKEY)
+    validated = _run(project_root, "validate", CITEKEY)
     assert "Summary: checked=1, errors=0, warnings=0" in validated.output
     assert not snapshot_path.exists()
 
@@ -472,23 +472,23 @@ def test_version_0_1_acceptance_workflow(vault: Path, library: FakeZoteroLibrary
 
     # 8. The user approves one existing registry tag; suggestions stay proposals.
     _edit(note_path, "tags: []", f"tags:\n- {APPROVED_TAG}")
-    plan = _run(vault, "tags", CITEKEY)
+    plan = _run(project_root, "tags", CITEKEY)
     assert f"Existing Zotero tags: {EXISTING_ZOTERO_TAG}" in plan.output
     assert f"Approved tags: {APPROVED_TAG}" in plan.output
     assert f"Suggested tags (not pushed): {SUGGESTED_TAG}" in plan.output
     assert f"Pending additions: {APPROVED_TAG}" in plan.output
 
-    dry_run = _run(vault, "push-tags", CITEKEY, "--dry-run")
+    dry_run = _run(project_root, "push-tags", CITEKEY, "--dry-run")
     assert f"DRY-RUN: would add {APPROVED_TAG}" in dry_run.output
     assert library.tag_names == [EXISTING_ZOTERO_TAG]
 
     # 9. An explicit authorization precedes the only Zotero write in the flow.
-    authorized = _run(vault, "authorize")
+    authorized = _run(project_root, "authorize")
     assert "Authorization saved" in authorized.output
-    assert (vault / ".research" / "credentials.json").is_file()
+    assert (project_root / ".research" / "credentials.json").is_file()
     assert library.issued_keys == [LOCAL_WRITE_KEY]
 
-    pushed = _run(vault, "push-tags", CITEKEY)
+    pushed = _run(project_root, "push-tags", CITEKEY)
     assert f"PUSH: added {APPROVED_TAG} (attempts=1)" in pushed.output
     assert library.patch_keys == [LOCAL_WRITE_KEY]
     assert library.tag_names == [EXISTING_ZOTERO_TAG, APPROVED_TAG]
@@ -502,7 +502,7 @@ def test_version_0_1_acceptance_workflow(vault: Path, library: FakeZoteroLibrary
     assert synchronized.ai_suggested_tags == (SUGGESTED_TAG,)
     assert synchronized.human_read_status == "queued"
 
-    assert "Summary: checked=1, errors=0, warnings=0" in _run(vault, "validate").output
+    assert "Summary: checked=1, errors=0, warnings=0" in _run(project_root, "validate").output
 
     # 10. A changed PDF marks the AI review outdated without touching human state.
     library.replace_pdf(
@@ -510,7 +510,7 @@ def test_version_0_1_acceptance_workflow(vault: Path, library: FakeZoteroLibrary
         _write_pdf(library.pdf_path.parent / "second.pdf", _paper_pages("Revised version")),
         "2026-08-06T12:00:00Z",
     )
-    updated = _run(vault, "sync")
+    updated = _run(project_root, "sync")
     assert f"UPDATE {ITEM_KEY} {CITEKEY}" in updated.output
     assert "mode=incremental" in updated.output
 
@@ -525,12 +525,12 @@ def test_version_0_1_acceptance_workflow(vault: Path, library: FakeZoteroLibrary
     assert "**Read.** It connects generative modelling" in outdated.body
 
     # The stale extraction cache is reported until the new PDF is extracted.
-    stale = _run(vault, "validate", exit_code=1)
+    stale = _run(project_root, "validate", exit_code=1)
     assert "extraction-cache-mismatch" in stale.output
-    re_extracted = _run(vault, "extract", CITEKEY)
+    re_extracted = _run(project_root, "extract", CITEKEY)
     assert re_extracted.output.startswith(f"EXTRACTED {CITEKEY} ->")
     assert "Revised version" in cache_path.read_text(encoding="utf-8")
-    assert "Summary: checked=1, errors=0, warnings=0" in _run(vault, "validate").output
+    assert "Summary: checked=1, errors=0, warnings=0" in _run(project_root, "validate").output
 
     # 11. Obsidian can display the note: every dashboard property exists in it.
     properties = _dashboard_properties()
