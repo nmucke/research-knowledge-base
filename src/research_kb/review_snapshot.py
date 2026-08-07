@@ -108,11 +108,13 @@ class ReviewSnapshotStore:
         root = self.settings.review_snapshot_dir
         try:
             resolved = root.resolve()
-            vault = self.settings.vault_path.resolve()
+            research_dir = self.settings.research_dir.resolve()
         except OSError as error:
             raise ValidationError(f"{root}: invalid review snapshot directory: {error}") from error
-        if root.is_symlink() or not resolved.is_relative_to(vault):
-            raise ValidationError(f"{root}: review snapshot directory resolves outside the vault")
+        if root.is_symlink() or not resolved.is_relative_to(research_dir):
+            raise ValidationError(
+                f"{root}: review snapshot directory resolves outside the research state directory"
+            )
 
     def _require_safe_file(self, path: Path) -> None:
         self._require_safe_root()

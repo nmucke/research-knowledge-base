@@ -573,12 +573,22 @@ def _print_review_context(context: ReviewContext, vault_path: Path) -> None:
     for index, (label, path) in enumerate(fields):
         if index:
             typer.echo()
-        try:
-            displayed = path.relative_to(vault_path)
-        except ValueError:
-            displayed = path
         typer.echo(f"{label}:")
-        typer.echo(str(displayed))
+        typer.echo(str(_display_path(path, vault_path)))
+
+
+def _display_path(path: Path, vault_path: Path) -> Path:
+    """Prefer a path the caller can open directly, then a vault-relative one.
+
+    The vault and the research state directory are configured independently, so
+    only the working directory reaches both. Agents run from the repository root.
+    """
+    for root in (Path.cwd(), vault_path):
+        try:
+            return path.relative_to(root)
+        except ValueError:
+            continue
+    return path
 
 
 def _log_validation_report(logger: logging.Logger, report: ValidationReport) -> None:

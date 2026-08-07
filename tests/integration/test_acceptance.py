@@ -29,7 +29,7 @@ from research_kb.markdown_store import MarkdownStore
 from research_kb.zotero_client import ZoteroClient
 
 REPO_ROOT = Path(__file__).parents[2]
-DASHBOARDS_DIR = REPO_ROOT / "Literature" / "Dashboards"
+DASHBOARDS_DIR = REPO_ROOT / "Vault" / "Literature" / "Dashboards"
 
 SERVER_ID = "acceptance-zotero"
 LOCAL_WRITE_KEY = "acceptance-local-write-key"
@@ -254,15 +254,20 @@ def _paper_pages(marker: str) -> tuple[str, ...]:
 
 @pytest.fixture
 def vault(tmp_path: Path) -> Path:
-    """Build a vault that matches a clean checkout of the repository."""
-    root = tmp_path / "vault"
+    """Build a checkout-shaped tree: a Vault/ directory beside regenerable .research/ state."""
+    root = tmp_path / "Vault"
     (root / "Literature" / "Papers").mkdir(parents=True)
     (root / "Literature" / "Dashboards").mkdir(parents=True)
     for dashboard in DASHBOARDS_DIR.glob("*.base"):
         shutil.copy(dashboard, root / "Literature" / "Dashboards" / dashboard.name)
-    shutil.copytree(REPO_ROOT / "System", root / "System")
+    shutil.copytree(REPO_ROOT / "Vault" / "System", root / "System")
     (root / "references.bib").write_text("% Better BibTeX keep-updated export\n", encoding="utf-8")
     return root
+
+
+def _state_dir(vault: Path) -> Path:
+    """Regenerable state lives beside the vault, never inside it."""
+    return vault.parent / ".research"
 
 
 @pytest.fixture
@@ -289,6 +294,7 @@ def _env(vault: Path) -> dict[str, str]:
     """Pin every setting so a developer's local `.env` cannot change the run."""
     return {
         "RESEARCH_VAULT_PATH": str(vault),
+        "RESEARCH_STATE_PATH": str(_state_dir(vault)),
         "ZOTERO_LOCAL_API": "http://localhost:23119/api",
         "BETTER_BIBTEX_RPC": "http://localhost:23119/better-bibtex/json-rpc",
         "ZOTERO_LIBRARY_TYPE": "user",
@@ -417,7 +423,7 @@ def test_version_0_1_acceptance_workflow(vault: Path, library: FakeZoteroLibrary
     extracted = _run(vault, "extract", CITEKEY)
     assert extracted.output.startswith(f"EXTRACTED {CITEKEY} ->")
     assert "Status: complete" in extracted.output
-    cache_path = vault / ".research" / "paper-text" / f"{CITEKEY}.md"
+    cache_path = _state_dir(vault) / "paper-text" / f"{CITEKEY}.md"
     cache_text = cache_path.read_text(encoding="utf-8")
     assert "<!-- PAGE 1 -->" in cache_text
     assert "<!-- PAGE 3 -->" in cache_text
@@ -430,7 +436,7 @@ def test_version_0_1_acceptance_workflow(vault: Path, library: FakeZoteroLibrary
     assert ".research/paper-text/lovelaceAcceptance2026.md" in context.output
     assert "System/reading-profile.md" in context.output
     assert "System/tag-registry.md" in context.output
-    snapshot_path = vault / ".research" / "review-snapshots" / f"{CITEKEY}.json"
+    snapshot_path = _state_dir(vault) / "review-snapshots" / f"{CITEKEY}.json"
     assert snapshot_path.is_file()
 
     # 6. The agent writes only AI-owned frontmatter and the managed block.
@@ -485,7 +491,7 @@ def test_version_0_1_acceptance_workflow(vault: Path, library: FakeZoteroLibrary
     # 9. An explicit authorization precedes the only Zotero write in the flow.
     authorized = _run(vault, "authorize")
     assert "Authorization saved" in authorized.output
-    assert (vault / ".research" / "credentials.json").is_file()
+    assert (_state_dir(vault) / "credentials.json").is_file()
     assert library.issued_keys == [LOCAL_WRITE_KEY]
 
     pushed = _run(vault, "push-tags", CITEKEY)

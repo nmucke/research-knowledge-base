@@ -12,6 +12,46 @@ Zotero when you explicitly ask it to.
 Claude Code and Codex read the extracted paper text and write only AI-owned
 fields and the managed AI-review block; they follow `CLAUDE.md` and `AGENTS.md`.
 
+## Repository layout
+
+The Obsidian vault is the `Vault/` directory, not the repository root. Obsidian
+therefore shows only the files you actually read and edit, while the source
+tree, the tests, and the regenerable state stay invisible to it.
+
+```
+research-knowledge-base/
+├── Vault/                  <- open THIS in Obsidian
+│   ├── Literature/
+│   │   ├── Papers/         one Markdown note per paper (Git-ignored)
+│   │   └── Dashboards/     Obsidian Bases views
+│   ├── System/             reading profile, tag registry, note template
+│   ├── references.bib      Better BibTeX "Keep updated" export target
+│   ├── CLAUDE.md           agent instructions (real file)
+│   └── AGENTS.md           agent instructions (real file)
+│
+├── CLAUDE.md -> Vault/CLAUDE.md    symlink, so Claude Code loads it at the root
+├── AGENTS.md -> Vault/AGENTS.md    symlink, so Codex loads it at the root
+│
+├── .research/              regenerable state, outside the vault
+├── src/research_kb/        the `research` CLI
+└── tests/
+```
+
+`CLAUDE.md` and `AGENTS.md` live in the vault so you can read them in Obsidian;
+the repository-root symlinks keep Claude Code and Codex loading them
+automatically. Edit either path — they are the same file.
+
+Both locations are configurable, and `.env.example` sets them explicitly:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `RESEARCH_VAULT_PATH` | `Vault` | Obsidian vault root; every vault path is resolved from here. |
+| `RESEARCH_STATE_PATH` | `.research` | Regenerable state, resolved from the working directory. |
+
+Keeping them separate is deliberate: `.research/` holds a PDF-text cache, logs,
+the sync cursor, and Zotero write credentials, none of which belong in a
+directory you may sync or share as an Obsidian vault.
+
 ## Requirements
 
 - Python 3.11 or newer
@@ -54,8 +94,8 @@ localhost and never forward it to other machines.
 
 Install Better BibTeX in Zotero and let it generate citation keys. Pin the keys
 of papers you already cite elsewhere, so a metadata edit cannot silently rename
-a note. Configure a "Keep updated" export of your library to `references.bib`
-in this repository if you want a live bibliography.
+a note. Configure a "Keep updated" export of your library to
+`Vault/references.bib` if you want a live bibliography.
 
 Better BibTeX answers JSON-RPC on
 `http://localhost:23119/better-bibtex/json-rpc`.
@@ -73,9 +113,13 @@ API key are ignored by Git and must never be committed.
 
 ### 5. Open the vault in Obsidian
 
-Open this repository folder as an Obsidian vault. Enable the core **Bases**
-feature to use the dashboards in `Literature/Dashboards/`. No Zotero-specific
-Obsidian plugin is required.
+Open the `Vault/` directory as an Obsidian vault — not the repository root.
+`Vault/` holds only what belongs in Obsidian (`Literature/`, `System/`,
+`references.bib`, `CLAUDE.md`, and `AGENTS.md`), so the source tree, tests, and
+generated state stay out of the File Explorer, search, and graph.
+
+Enable the core **Bases** feature to use the dashboards in
+`Literature/Dashboards/`. No Zotero-specific Obsidian plugin is required.
 
 ### 6. Verify the installation
 
@@ -99,7 +143,7 @@ tag pushes.
 4. Run `uv run research review-context <citekey>` and ask Claude Code or Codex
    to review the paper.
 5. Run `uv run research validate <citekey>` until it passes.
-6. Approve any proposed tag yourself: add it to `System/tag-registry.md`, move
+6. Approve any proposed tag yourself: add it to `Vault/System/tag-registry.md`, move
    it from `ai_suggested_tags` into `tags`, and remove it from
    `ai_suggested_tags`.
 7. Run `uv run research push-tags <citekey> --dry-run`, then
@@ -162,7 +206,7 @@ uv run research review-context chen2025flowdas
 
 This refreshes extraction when needed and prints the paper note, extracted text,
 reading profile, and tag registry paths. `CLAUDE.md` and `AGENTS.md` contain the
-same constrained review contract; `System/Templates/Paper.md` is the canonical
+same constrained review contract; `Vault/System/Templates/Paper.md` is the canonical
 paper-note template. The command also stores a one-shot snapshot of human-owned
 fields and a hash of the Human notes section. A successful targeted validation
 consumes that snapshot; a failure retains it so protected changes can be corrected.
@@ -200,7 +244,7 @@ promote, or push tags to Zotero.
 
 Only tags already approved in a paper note's `tags` frontmatter are eligible to
 be sent to Zotero. AI-suggested tags are never pushed. To approve a suggestion,
-first add it to `System/tag-registry.md`, move it from `ai_suggested_tags` into
+first add it to `Vault/System/tag-registry.md`, move it from `ai_suggested_tags` into
 `tags`, and remove it from `ai_suggested_tags`. Inspect the deterministic local
 comparison first:
 
@@ -252,8 +296,10 @@ configured with `ALLOWED_TAG_NAMESPACES`; this does not approve new tags.
 
 ## Obsidian dashboards
 
-The `.base` files in `Literature/Dashboards/` are Obsidian Bases views that
-query paper-note frontmatter in `Literature/Papers/`; simply opening a
+The `.base` files in `Vault/Literature/Dashboards/` are Obsidian Bases views
+that query paper-note frontmatter in `Vault/Literature/Papers/`. Their filter
+expressions are vault-relative, so they read `Literature/Papers` from inside
+Obsidian. Simply opening a
 dashboard does not change any notes. Enable the core **Bases** feature in
 Obsidian's Settings, then open a `.base` file from the File Explorer.
 
@@ -319,7 +365,7 @@ safety net) and re-run `uv run research validate <citekey>`. Never repair these
 by editing the snapshot.
 
 **`tag-unknown` or `applied-tag-unknown`** — a tag is missing from
-`System/tag-registry.md`. Add a definition there if you approve the tag, or
+`Vault/System/tag-registry.md`. Add a definition there if you approve the tag, or
 remove it from the note. Suggested tags must stay outside `tags` until you
 approve them.
 

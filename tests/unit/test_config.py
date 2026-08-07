@@ -15,8 +15,21 @@ def test_vault_paths_are_resolved_from_root(tmp_path: Path) -> None:
     assert settings.vault_path == tmp_path.resolve()
     assert settings.papers_dir == tmp_path / "Literature" / "Papers"
     assert settings.tag_registry_path == tmp_path / "System" / "tag-registry.md"
+
+
+def test_research_state_is_resolved_independently_of_the_vault(tmp_path: Path) -> None:
+    vault = tmp_path / "Vault"
+    vault.mkdir()
+    settings = Settings(
+        _env_file=None,
+        research_vault_path=vault,
+        research_state_path=tmp_path / ".research",
+    )
+
+    assert settings.research_dir == (tmp_path / ".research").resolve()
     assert settings.log_dir == tmp_path / ".research" / "logs"
     assert settings.credentials_path == tmp_path / ".research" / "credentials.json"
+    assert not settings.research_dir.is_relative_to(settings.vault_path)
 
 
 def test_log_level_is_case_insensitive(tmp_path: Path) -> None:
