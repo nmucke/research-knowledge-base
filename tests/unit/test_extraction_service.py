@@ -55,7 +55,7 @@ def _settings(tmp_path: Path, *, library_type: str = "user", library_id: int = 0
 
 
 def _paper_store(tmp_path: Path, *, attachment_key: str | None = "PDFX5678") -> MarkdownStore:
-    store = MarkdownStore(tmp_path / "Literature" / "Papers")
+    store = MarkdownStore(tmp_path / "vault" / "Literature" / "Papers")
     store.create(
         PaperNote(
             zotero_key="ABCD1234",
@@ -285,7 +285,7 @@ def test_encrypted_and_unopenable_pdfs_raise_clear_domain_errors(tmp_path: Path)
 def test_missing_note_attachment_and_source_have_actionable_errors(tmp_path: Path) -> None:
     source = tmp_path / "missing.pdf"
     settings = _settings(tmp_path)
-    empty_store = MarkdownStore(tmp_path / "Literature" / "Papers")
+    empty_store = MarkdownStore(tmp_path / "vault" / "Literature" / "Papers")
     service = ExtractionService(settings, PathResolver(source), empty_store)
     with pytest.raises(PDFExtractionError, match="run research sync first"):
         service.extract("doeUseful2026")

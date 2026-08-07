@@ -94,7 +94,7 @@ def test_validate_whole_vault_passes_and_prints_summary(
     assert result.exit_code == 0
     assert result.stdout.splitlines() == ["Summary: checked=3, errors=0, warnings=0"]
     assert FakeValidationService.calls == [
-        (tmp_path.resolve(), tmp_path / "Literature" / "Papers", None)
+        (tmp_path.resolve(), tmp_path / "vault" / "Literature" / "Papers", None)
     ]
 
 
@@ -107,7 +107,7 @@ def test_validate_warning_only_exits_zero(
             issues=(
                 FakeIssue(
                     FakeSeverity.WARNING,
-                    Path("Literature/Papers/paper.md"),
+                    Path("vault/Literature/Papers/paper.md"),
                     "review-outdated",
                     "AI review is outdated.",
                 ),
@@ -120,7 +120,7 @@ def test_validate_warning_only_exits_zero(
 
     assert result.exit_code == 0
     assert result.stdout.splitlines() == [
-        "WARN Literature/Papers/paper.md: [review-outdated] AI review is outdated.",
+        "WARN vault/Literature/Papers/paper.md: [review-outdated] AI review is outdated.",
         "Summary: checked=1, errors=0, warnings=1",
     ]
 

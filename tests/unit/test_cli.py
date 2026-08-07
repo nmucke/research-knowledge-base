@@ -510,8 +510,9 @@ class _SyncServiceFake:
         return report
 
 
-def _create_required_vault_paths(vault_path: Path) -> None:
-    (vault_path / "Literature" / "Papers").mkdir(parents=True)
-    (vault_path / "System" / "Templates").mkdir(parents=True)
-    (vault_path / "System" / "reading-profile.md").write_text("profile\n", encoding="utf-8")
-    (vault_path / "System" / "tag-registry.md").write_text("tags\n", encoding="utf-8")
+def _create_required_vault_paths(project_root: Path) -> None:
+    vault = project_root / "vault"
+    (vault / "Literature" / "Papers").mkdir(parents=True)
+    (vault / "System" / "Templates").mkdir(parents=True)
+    (vault / "System" / "reading-profile.md").write_text("profile\n", encoding="utf-8")
+    (vault / "System" / "tag-registry.md").write_text("tags\n", encoding="utf-8")

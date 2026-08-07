@@ -14,8 +14,8 @@ from research_kb.tag_service import TagService
 
 
 def _settings(tmp_path: Path) -> Settings:
-    (tmp_path / "System").mkdir()
-    (tmp_path / "System" / "tag-registry.md").write_text(
+    (tmp_path / "vault" / "System").mkdir(parents=True)
+    (tmp_path / "vault" / "System" / "tag-registry.md").write_text(
         "### `domain/weather`\n\nWeather.\n\n### `method/ensemble`\n\nEnsembles.\n",
         encoding="utf-8",
     )

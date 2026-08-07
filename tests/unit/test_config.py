@@ -13,8 +13,8 @@ def test_vault_paths_are_resolved_from_root(tmp_path: Path) -> None:
     settings = Settings(_env_file=None, research_vault_path=tmp_path)
 
     assert settings.vault_path == tmp_path.resolve()
-    assert settings.papers_dir == tmp_path / "Literature" / "Papers"
-    assert settings.tag_registry_path == tmp_path / "System" / "tag-registry.md"
+    assert settings.papers_dir == tmp_path / "vault" / "Literature" / "Papers"
+    assert settings.tag_registry_path == tmp_path / "vault" / "System" / "tag-registry.md"
     assert settings.log_dir == tmp_path / ".research" / "logs"
     assert settings.credentials_path == tmp_path / ".research" / "credentials.json"
 

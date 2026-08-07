@@ -73,9 +73,31 @@ API key are ignored by Git and must never be committed.
 
 ### 5. Open the vault in Obsidian
 
-Open this repository folder as an Obsidian vault. Enable the core **Bases**
-feature to use the dashboards in `Literature/Dashboards/`. No Zotero-specific
-Obsidian plugin is required.
+Open the `vault/` folder — not the repository root — as an Obsidian vault. The
+vault contains only literature content, so the CLI source, tests, generated
+state, and project documentation stay out of the Obsidian interface:
+
+```
+research-knowledge-base/     project root (run the CLI here)
+├── vault/                   ← open this folder in Obsidian
+│   ├── Literature/
+│   │   ├── Papers/          one Markdown note per paper
+│   │   └── Dashboards/      Obsidian Bases views
+│   └── System/
+│       ├── Templates/
+│       ├── reading-profile.md
+│       └── tag-registry.md
+├── .research/               generated, disposable state
+├── src/, tests/             the research CLI
+└── references.bib           Better BibTeX keep-updated export
+```
+
+Enable the core **Bases** feature to use the dashboards in
+`vault/Literature/Dashboards/`. No Zotero-specific Obsidian plugin is required.
+
+`RESEARCH_OBSIDIAN_DIR` sets the vault folder name, relative to the project
+root; the default is `vault`. Rename the folder and the setting together if you
+prefer a different name.
 
 ### 6. Verify the installation
 
@@ -99,9 +121,9 @@ tag pushes.
 4. Run `uv run research review-context <citekey>` and ask Claude Code or Codex
    to review the paper.
 5. Run `uv run research validate <citekey>` until it passes.
-6. Approve any proposed tag yourself: add it to `System/tag-registry.md`, move
-   it from `ai_suggested_tags` into `tags`, and remove it from
-   `ai_suggested_tags`.
+6. Approve any proposed tag yourself: add it to
+   `vault/System/tag-registry.md`, move it from `ai_suggested_tags` into `tags`,
+   and remove it from `ai_suggested_tags`.
 7. Run `uv run research push-tags <citekey> --dry-run`, then
    `uv run research push-tags <citekey>`.
 8. Read the paper yourself, set `human_read_status: read` with `human_read_date`
@@ -162,8 +184,8 @@ uv run research review-context chen2025flowdas
 
 This refreshes extraction when needed and prints the paper note, extracted text,
 reading profile, and tag registry paths. `CLAUDE.md` and `AGENTS.md` contain the
-same constrained review contract; `System/Templates/Paper.md` is the canonical
-paper-note template. The command also stores a one-shot snapshot of human-owned
+same constrained review contract; `vault/System/Templates/Paper.md` is the
+canonical paper-note template. The command also stores a one-shot snapshot of human-owned
 fields and a hash of the Human notes section. A successful targeted validation
 consumes that snapshot; a failure retains it so protected changes can be corrected.
 
@@ -200,7 +222,7 @@ promote, or push tags to Zotero.
 
 Only tags already approved in a paper note's `tags` frontmatter are eligible to
 be sent to Zotero. AI-suggested tags are never pushed. To approve a suggestion,
-first add it to `System/tag-registry.md`, move it from `ai_suggested_tags` into
+first add it to `vault/System/tag-registry.md`, move it from `ai_suggested_tags` into
 `tags`, and remove it from `ai_suggested_tags`. Inspect the deterministic local
 comparison first:
 
@@ -252,8 +274,8 @@ configured with `ALLOWED_TAG_NAMESPACES`; this does not approve new tags.
 
 ## Obsidian dashboards
 
-The `.base` files in `Literature/Dashboards/` are Obsidian Bases views that
-query paper-note frontmatter in `Literature/Papers/`; simply opening a
+The `.base` files in `vault/Literature/Dashboards/` are Obsidian Bases views that
+query paper-note frontmatter in `vault/Literature/Papers/`; simply opening a
 dashboard does not change any notes. Enable the core **Bases** feature in
 Obsidian's Settings, then open a `.base` file from the File Explorer.
 
@@ -319,7 +341,7 @@ safety net) and re-run `uv run research validate <citekey>`. Never repair these
 by editing the snapshot.
 
 **`tag-unknown` or `applied-tag-unknown`** — a tag is missing from
-`System/tag-registry.md`. Add a definition there if you approve the tag, or
+`vault/System/tag-registry.md`. Add a definition there if you approve the tag, or
 remove it from the note. Suggested tags must stay outside `tags` until you
 approve them.
 

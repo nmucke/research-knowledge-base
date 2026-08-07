@@ -105,7 +105,7 @@ def test_missing_server_id_reports_configured_web_fallback(tmp_path: Path) -> No
 
 def test_missing_required_vault_path_fails(tmp_path: Path) -> None:
     _create_required_vault_paths(tmp_path)
-    (tmp_path / "System" / "tag-registry.md").unlink()
+    (tmp_path / "vault" / "System" / "tag-registry.md").unlink()
 
     report = _service(tmp_path).run()
 
@@ -170,11 +170,12 @@ def _service(
     )
 
 
-def _create_required_vault_paths(vault_path: Path) -> None:
-    (vault_path / "Literature" / "Papers").mkdir(parents=True)
-    (vault_path / "System" / "Templates").mkdir(parents=True)
-    (vault_path / "System" / "reading-profile.md").write_text("profile\n", encoding="utf-8")
-    (vault_path / "System" / "tag-registry.md").write_text("tags\n", encoding="utf-8")
+def _create_required_vault_paths(project_root: Path) -> None:
+    vault = project_root / "vault"
+    (vault / "Literature" / "Papers").mkdir(parents=True)
+    (vault / "System" / "Templates").mkdir(parents=True)
+    (vault / "System" / "reading-profile.md").write_text("profile\n", encoding="utf-8")
+    (vault / "System" / "tag-registry.md").write_text("tags\n", encoding="utf-8")
 
 
 def _checks(report: DoctorReport) -> dict[str, DoctorCheck]:

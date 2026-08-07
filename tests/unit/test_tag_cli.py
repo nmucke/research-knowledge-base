@@ -100,11 +100,11 @@ def _reset_client() -> None:
 
 
 def _vault(tmp_path: Path) -> tuple[Settings, MarkdownStore, Path]:
-    (tmp_path / "System").mkdir()
-    (tmp_path / "System" / "tag-registry.md").write_text(
+    (tmp_path / "vault" / "System").mkdir(parents=True)
+    (tmp_path / "vault" / "System" / "tag-registry.md").write_text(
         "### `domain/weather`\n\nWeather.\n", encoding="utf-8"
     )
-    store = MarkdownStore(tmp_path / "Literature" / "Papers")
+    store = MarkdownStore(tmp_path / "vault" / "Literature" / "Papers")
     path = store.create(
         PaperNote(
             zotero_key="ABCD1234",

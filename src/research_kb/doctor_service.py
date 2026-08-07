@@ -170,7 +170,8 @@ class DoctorService:
 
     def _check_vault_paths(self) -> DoctorCheck:
         required_paths = (
-            ("vault root", self._settings.vault_path, True),
+            ("project root", self._settings.vault_path, True),
+            ("Obsidian vault root", self._settings.obsidian_vault_path, True),
             ("papers directory", self._settings.papers_dir, True),
             ("templates directory", self._settings.templates_dir, True),
             ("reading profile", self._settings.reading_profile_path, False),
