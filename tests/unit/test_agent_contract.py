@@ -5,9 +5,8 @@ import yaml  # type: ignore[import-untyped]
 from research_kb.models import PaperNote
 
 ROOT = Path(__file__).parents[2]
-VAULT = ROOT / "Vault"
-AGENT_FILES = (VAULT / "AGENTS.md", VAULT / "CLAUDE.md")
-TEMPLATE = VAULT / "System" / "Templates" / "Paper.md"
+AGENT_FILES = (ROOT / "AGENTS.md", ROOT / "CLAUDE.md")
+TEMPLATE = ROOT / "System" / "Templates" / "Paper.md"
 
 
 def _frontmatter(text: str) -> dict[str, object]:
@@ -118,12 +117,3 @@ def test_paper_template_keeps_human_and_ai_sections_separate() -> None:
     assert "MANAGED:" not in human_section
     for heading in ("### Summary", "### Important results", "### Critique", "### Connections"):
         assert heading in human_section
-
-
-def test_root_agent_instructions_are_symlinks_into_the_vault() -> None:
-    """Agents load instructions from the repository root; the vault owns the content."""
-    for name in ("AGENTS.md", "CLAUDE.md"):
-        link = ROOT / name
-        assert link.is_symlink(), f"{name} must be a symlink so the vault holds the real file"
-        assert link.resolve() == (VAULT / name).resolve()
-        assert link.read_text(encoding="utf-8") == (VAULT / name).read_text(encoding="utf-8")

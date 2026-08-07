@@ -1,26 +1,26 @@
-filters:
-  and:
-    - file.inFolder("Literature/Papers")
-    - file.ext == "md"
-    - type == "paper"
 formulas:
-  paper: file.asLink(title)
+  paper: 'file.asLink(title)'
 properties:
   formula.paper:
     displayName: Title
+filters:
+  and:
+    - 'file.inFolder("Literature/Papers")'
+    - 'file.ext == "md"'
+    - 'type == "paper"'
 views:
   - type: table
     name: Recommended Reading
     filters:
       and:
-        - ai_recommendation == "must-read" || ai_recommendation == "read"
-        - human_read_status == "unread" || human_read_status == "queued"
+        - 'ai_recommendation == "must-read" || ai_recommendation == "read"'
+        - 'human_read_status == "unread" || human_read_status == "queued"'
     order:
       - formula.paper
-      - authors
-      - year
-      - ai_recommendation
-      - ai_relevance
-      - ai_recommendation_confidence
-      - human_priority
-      - human_relevance
+      - note.authors
+      - note.year
+      - note.ai_recommendation
+      - note.ai_relevance
+      - note.ai_recommendation_confidence
+      - note.human_priority
+      - note.human_relevance

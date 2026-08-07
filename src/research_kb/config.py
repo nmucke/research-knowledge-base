@@ -26,8 +26,7 @@ class Settings(BaseSettings):
         frozen=True,
     )
 
-    research_vault_path: DirectoryPath = Path("Vault")
-    research_state_path: Path = Path(".research")
+    research_vault_path: DirectoryPath = Path(".")
     zotero_local_api: str = "http://localhost:23119/api"
     better_bibtex_rpc: str = "http://localhost:23119/better-bibtex/json-rpc"
     zotero_library_type: LibraryType = "user"
@@ -103,7 +102,6 @@ class Settings(BaseSettings):
 
     @property
     def vault_path(self) -> Path:
-        """Root of the Obsidian vault, holding only human- and agent-facing files."""
         return Path(self.research_vault_path).resolve()
 
     @property
@@ -124,8 +122,7 @@ class Settings(BaseSettings):
 
     @property
     def research_dir(self) -> Path:
-        """Regenerable state, kept outside the vault so Obsidian never sees it."""
-        return Path(self.research_state_path).resolve()
+        return self.vault_path / ".research"
 
     @property
     def credentials_path(self) -> Path:

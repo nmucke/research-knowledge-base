@@ -139,33 +139,3 @@ def test_extract_help_lists_force_and_review_context_is_registered() -> None:
     root_output = re.sub(r"\x1b\[[0-9;]*m", "", root_help.output)
     assert "--force" in extract_output
     assert "review-context" in root_output
-
-
-def test_review_context_paths_are_relative_to_the_repository_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """From a checkout, every reported path must be openable as printed."""
-    vault_dir = tmp_path / "Vault"
-    vault_dir.mkdir()
-    _vault(vault_dir)
-    monkeypatch.setattr(cli, "ZoteroClient", CLIPathResolver)
-    monkeypatch.chdir(tmp_path)
-
-    result = runner.invoke(
-        cli.app,
-        ["review-context", "doeUseful2026"],
-        env={
-            "RESEARCH_VAULT_PATH": str(vault_dir),
-            "RESEARCH_STATE_PATH": str(tmp_path / ".research"),
-        },
-    )
-
-    assert result.exit_code == 0
-    for reported in (
-        "Vault/Literature/Papers/doeUseful2026.md",
-        ".research/paper-text/doeUseful2026.md",
-        "Vault/System/reading-profile.md",
-        "Vault/System/tag-registry.md",
-    ):
-        assert reported in result.stdout.splitlines()
-        assert (tmp_path / reported).is_file()

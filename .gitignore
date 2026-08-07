@@ -34,8 +34,4 @@ build/
 tmp/
 
 # Paper notes
-Vault/Literature/Papers/
-
-# Obsidian workspace state
-.obsidian/
-Vault/.obsidian/
+Literature/papers/

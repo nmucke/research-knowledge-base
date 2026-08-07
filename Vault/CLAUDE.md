@@ -1,6 +1,6 @@
 # Literature management instructions
 
-This repository holds an Obsidian literature vault connected to Zotero. The `Vault/` directory is the vault: it contains `Literature/`, `System/`, `references.bib`, and these instructions, and it is the only part of the repository Obsidian sees. Everything outside `Vault/` is code, tests, and regenerable state under `.research/`. Zotero owns bibliographic metadata and PDFs; the user alone owns human reading state and notes.
+This repository is an Obsidian literature vault connected to Zotero. Zotero owns bibliographic metadata and PDFs; the user alone owns human reading state and notes.
 
 ## Project command runner
 
@@ -11,7 +11,7 @@ The `research` CLI is project-local and is not expected to be on the shell's `PA
 For a request to review `<citekey>`:
 
 1. Run `uv run research review-context <citekey>`.
-2. Read all four files reported by the command: the paper note, extracted paper text, `Vault/System/reading-profile.md`, and `Vault/System/tag-registry.md`. The command prints paths that resolve from the repository root.
+2. Read all four files reported by the command: the paper note, extracted paper text, `System/reading-profile.md`, and `System/tag-registry.md`.
 3. Edit only AI-owned frontmatter fields and the content between `<!-- BEGIN MANAGED:AI_REVIEW -->` and `<!-- END MANAGED:AI_REVIEW -->`.
 4. Run `uv run research validate <citekey>` and correct only AI-owned content until it passes.
 

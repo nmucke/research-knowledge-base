@@ -1,25 +1,25 @@
-filters:
-  and:
-    - file.inFolder("Literature/Papers")
-    - file.ext == "md"
-    - type == "paper"
 formulas:
-  paper: file.asLink(title)
+  paper: 'file.asLink(title)'
 properties:
   formula.paper:
     displayName: Title
+filters:
+  and:
+    - 'file.inFolder("Literature/Papers")'
+    - 'file.ext == "md"'
+    - 'type == "paper"'
 views:
   - type: table
     name: Inbox
     filters:
       and:
-        - human_read_status == "unread"
+        - 'human_read_status == "unread"'
     order:
       - formula.paper
-      - authors
-      - year
-      - human_priority
-      - human_relevance
-      - ai_review_status
-      - ai_recommendation
-      - date_added
+      - note.authors
+      - note.year
+      - note.human_priority
+      - note.human_relevance
+      - note.ai_review_status
+      - note.ai_recommendation
+      - note.date_added

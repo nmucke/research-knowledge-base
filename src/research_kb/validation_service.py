@@ -479,13 +479,12 @@ class ValidationService:
         if note.ai_review_scope != "full-text" or not has_review:
             return []
         cache_path = self.settings.paper_text_dir / path.name
-        research_dir = self.settings.research_dir
-        if not self._safe_root(self.settings.paper_text_dir, research_dir):
+        if not self._safe_root(self.settings.paper_text_dir):
             return [
                 self._issue(
                     cache_path,
                     "extraction-cache-unsafe",
-                    "Extraction-cache directory resolves outside the research state directory.",
+                    "Extraction-cache directory resolves outside the vault.",
                 )
             ]
         if not cache_path.is_file():
@@ -496,7 +495,7 @@ class ValidationService:
                     f"Full-text review has no extraction cache at {self._display(cache_path)}.",
                 )
             ]
-        if not self._safe_child_file(cache_path, self.settings.paper_text_dir, research_dir):
+        if not self._safe_child_file(cache_path, self.settings.paper_text_dir):
             return [
                 self._issue(
                     cache_path,
@@ -687,17 +686,16 @@ class ValidationService:
             return False
         return self._safe_child_file(path, self.markdown_store.papers_dir)
 
-    def _safe_root(self, root: Path, base: Path | None = None) -> bool:
-        """Confirm `root` is a real directory contained by `base`, the vault by default."""
+    def _safe_root(self, root: Path) -> bool:
         try:
             resolved = root.resolve()
-            resolved_base = (base or self.settings.vault_path).resolve()
+            vault = self.settings.vault_path.resolve()
         except OSError:
             return False
-        return not root.is_symlink() and resolved.is_relative_to(resolved_base)
+        return not root.is_symlink() and resolved.is_relative_to(vault)
 
-    def _safe_child_file(self, path: Path, root: Path, base: Path | None = None) -> bool:
-        if not self._safe_root(root, base):
+    def _safe_child_file(self, path: Path, root: Path) -> bool:
+        if not self._safe_root(root):
             return False
         try:
             resolved_root = root.resolve()

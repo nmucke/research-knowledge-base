@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 import yaml
 
-DASHBOARDS_DIR = Path(__file__).parents[2] / "Vault" / "Literature" / "Dashboards"
+DASHBOARDS_DIR = Path(__file__).parents[2] / "Literature" / "Dashboards"
 EXPECTED_DASHBOARDS = {
     "AI Reviewed.base",
     "Human Read.base",
