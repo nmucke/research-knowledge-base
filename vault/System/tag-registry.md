@@ -22,3 +22,17 @@ Score-based or diffusion-based generative modelling.
 
 Methods explicitly using stochastic interpolants or closely equivalent
 formulations.
+
+## Property
+
+### `property/structure-preserving`
+
+Papers where the method preserves a structural property of the physical system by
+construction, such as a constraint, invariant, symmetry, or conservation law.
+
+## Task
+
+### `task/closure-modeling`
+
+Papers whose task is modelling unresolved or subgrid terms so that a coarse or
+reduced model reproduces the behaviour of a finer reference model.

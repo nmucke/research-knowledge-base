@@ -121,9 +121,11 @@ tag pushes.
 4. Run `uv run research review-context <citekey>` and ask Claude Code or Codex
    to review the paper.
 5. Run `uv run research validate <citekey>` until it passes.
-6. Approve any proposed tag yourself: add it to
-   `vault/System/tag-registry.md`, move it from `ai_suggested_tags` into `tags`,
-   and remove it from `ai_suggested_tags`.
+6. Approve tags: the agent lists its applied and suggested tags as a numbered
+   list, you reply with the numbers to accept, and it moves those tags into
+   `tags`, defines each accepted suggestion in `vault/System/tag-registry.md`,
+   and clears the ruled-on entries from `ai_suggested_tags`. You can also do
+   this by hand; nothing is approved until it appears in `tags`.
 7. Run `uv run research push-tags <citekey> --dry-run`, then
    `uv run research push-tags <citekey>`.
 8. Read the paper yourself, set `human_read_status: read` with `human_read_date`
@@ -221,9 +223,11 @@ promote, or push tags to Zotero.
 ## Reconcile approved tags with Zotero
 
 Only tags already approved in a paper note's `tags` frontmatter are eligible to
-be sent to Zotero. AI-suggested tags are never pushed. To approve a suggestion,
-first add it to `vault/System/tag-registry.md`, move it from `ai_suggested_tags` into
-`tags`, and remove it from `ai_suggested_tags`. Inspect the deterministic local
+be sent to Zotero. AI-suggested tags are never pushed. Approving a suggestion
+means defining it in `vault/System/tag-registry.md`, moving it from
+`ai_suggested_tags` into `tags`, and removing it from `ai_suggested_tags` —
+either yourself or through the agent's tag approval workflow in `AGENTS.md`,
+which acts only on the tags you accept. Inspect the deterministic local
 comparison first:
 
 ```sh
