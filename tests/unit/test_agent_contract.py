@@ -2,12 +2,15 @@ from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
 
-from research_kb.models import PaperNote
+from research_kb.models import PaperNote, ProjectNote
 
 ROOT = Path(__file__).parents[2]
 AGENT_FILES = (ROOT / "AGENTS.md", ROOT / "CLAUDE.md")
 SKILL = ROOT / ".claude" / "skills" / "paper-review" / "SKILL.md"
 CODEX_SKILL = ROOT / ".codex" / "skills" / "paper-review"
+PROJECT_SKILL = ROOT / ".claude" / "skills" / "project-curation" / "SKILL.md"
+CODEX_PROJECT_SKILL = ROOT / ".codex" / "skills" / "project-curation"
+PROJECT_TEMPLATE = ROOT / "vault" / "System" / "Templates" / "Project.md"
 TEMPLATE = ROOT / "vault" / "System" / "Templates" / "Paper.md"
 
 
@@ -27,17 +30,20 @@ def test_agent_instructions_are_equivalent_and_route_to_the_skill() -> None:
     assert "do not probe for or invoke a bare `research` executable first" in contract
     assert ".venv/bin/research ..." in contract
     assert "`paper-review` skill" in contract
+    assert "`project-curation` skill" in contract
 
 
 def test_both_agents_resolve_to_one_source() -> None:
-    for path in (AGENT_FILES[0], CODEX_SKILL):
+    for path in (AGENT_FILES[0], CODEX_SKILL, CODEX_PROJECT_SKILL):
         assert path.is_symlink(), f"{path} must stay a symlink so the copies cannot drift"
 
     assert AGENT_FILES[0].resolve() == AGENT_FILES[1].resolve()
     assert CODEX_SKILL.resolve() == SKILL.parent.resolve()
-    assert (CODEX_SKILL / "SKILL.md").read_text(encoding="utf-8") == SKILL.read_text(
-        encoding="utf-8"
-    )
+    assert CODEX_PROJECT_SKILL.resolve() == PROJECT_SKILL.parent.resolve()
+    for claude_skill, codex_skill in ((SKILL, CODEX_SKILL), (PROJECT_SKILL, CODEX_PROJECT_SKILL)):
+        assert (codex_skill / "SKILL.md").read_text(encoding="utf-8") == claude_skill.read_text(
+            encoding="utf-8"
+        )
 
 
 def test_skill_carries_an_executable_review_workflow() -> None:
@@ -121,6 +127,8 @@ def test_paper_template_has_current_schema_defaults_and_managed_blocks() -> None
     assert metadata["tags"] == []
     assert metadata["ai_applied_tags"] == []
     assert metadata["ai_suggested_tags"] == []
+    assert metadata["projects"] == []
+    assert metadata["ai_suggested_projects"] == []
     assert metadata["zotero_missing"] is False
 
     for block in ("AI_REVIEW", "ZOTERO_ANNOTATIONS"):
@@ -142,3 +150,42 @@ def test_paper_template_keeps_human_and_ai_sections_separate() -> None:
     assert "MANAGED:" not in human_section
     for heading in ("### Summary", "### Important results", "### Critique", "### Connections"):
         assert heading in human_section
+
+
+def test_project_curation_skill_protects_the_human_written_brief() -> None:
+    skill = PROJECT_SKILL.read_text(encoding="utf-8")
+
+    linking = skill[skill.index("## Linking papers to an existing project") :]
+    assert linking.index("uv run research projects candidates <project-id>") < linking.index(
+        "uv run research projects index"
+    )
+    for invariant in (
+        "Never write a project note's `## Description`",
+        "Never create a project note without an explicit request",
+        "Never edit a `MANAGED:PROJECTS` or `MANAGED:PROJECT_PAPERS` block",
+        "Never push projects to Zotero",
+        "Reply with the numbers to accept",
+    ):
+        assert invariant in skill
+
+
+def test_paper_review_skill_proposes_projects_without_approving_them() -> None:
+    skill = SKILL.read_text(encoding="utf-8")
+
+    assert "Record relevant projects in `ai_suggested_projects` only." in skill
+    assert "Never write `projects`" in skill
+    assert "**Projects** (relevant, not yet linked)" in skill
+    assert "uv run research projects index" in skill
+
+
+def test_project_template_matches_the_schema_and_carries_its_managed_block() -> None:
+    text = PROJECT_TEMPLATE.read_text(encoding="utf-8")
+    metadata = _frontmatter(text)
+
+    assert set(metadata) == set(ProjectNote.model_fields)
+    ProjectNote.model_validate(metadata)
+    assert metadata["status"] == "active"
+    for heading in ("## Description", "## Goals", "## Scope", "## Related papers", "## Notes"):
+        assert heading in text
+    assert text.count("<!-- BEGIN MANAGED:PROJECT_PAPERS -->") == 1
+    assert text.count("<!-- END MANAGED:PROJECT_PAPERS -->") == 1

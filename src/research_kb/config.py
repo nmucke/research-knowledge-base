@@ -130,6 +130,10 @@ class Settings(BaseSettings):
         return self.obsidian_vault_path / "Literature" / "Papers"
 
     @property
+    def projects_dir(self) -> Path:
+        return self.obsidian_vault_path / "Projects"
+
+    @property
     def templates_dir(self) -> Path:
         return self.obsidian_vault_path / "System" / "Templates"
 

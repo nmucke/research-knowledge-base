@@ -108,6 +108,9 @@ def test_review_context_auto_extracts_and_prints_spec_paths(
         "",
         "Tag registry:",
         "vault/System/tag-registry.md",
+        "",
+        "Active projects:",
+        "(none)",
     ]
     assert (tmp_path / ".research" / "paper-text" / "doeUseful2026.md").exists()
     assert (

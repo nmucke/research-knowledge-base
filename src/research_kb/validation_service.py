@@ -12,9 +12,22 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError as PydanticValidationError
 
 from research_kb.config import Settings
-from research_kb.exceptions import ManagedBlockError, MarkdownParseError, ValidationError
+from research_kb.exceptions import (
+    ManagedBlockError,
+    MarkdownParseError,
+    ResearchKBError,
+    ValidationError,
+)
 from research_kb.markdown_store import MarkdownStore
-from research_kb.models import TAG_NAMESPACES, ExtractionMetadata, PaperNote, ReviewSnapshot
+from research_kb.models import (
+    PROJECT_ID,
+    TAG_NAMESPACES,
+    ExtractionMetadata,
+    PaperNote,
+    ReviewSnapshot,
+)
+from research_kb.project_registry import parse_project_note
+from research_kb.project_service import ProjectService
 from research_kb.review_contract import validate_managed_review
 from research_kb.review_snapshot import ReviewSnapshotStore
 from research_kb.tag_registry import parse_tag_registry
@@ -124,8 +137,13 @@ class ValidationService:
                 )
             )
 
+        project_ids, project_issues = self._project_notes()
+        issues.extend(project_issues)
+
         for path in paths:
-            issues.extend(self._validate_path(path, registry_tags))
+            issues.extend(self._validate_path(path, registry_tags, project_ids))
+        if citekey is None:
+            issues.extend(self._project_index_issues())
 
         ordered = tuple(
             sorted(
@@ -195,6 +213,7 @@ class ValidationService:
         self,
         path: Path,
         registry_tags: frozenset[str] | None,
+        project_ids: frozenset[str] = frozenset(),
     ) -> list[ValidationIssue]:
         if not self._safe_note_path(path):
             return [
@@ -258,6 +277,7 @@ class ValidationService:
         if baseline is not None:
             issues.extend(self._human_ownership_issues(path, note, raw.body, baseline))
         issues.extend(self._tag_issues(path, note, registry_tags))
+        issues.extend(self._project_issues(path, note, project_ids))
         issues.extend(self._extraction_issues(path, note, has_review))
         return issues
 
@@ -472,6 +492,82 @@ class ValidationService:
                         )
                     )
         return issues
+
+    def _project_notes(self) -> tuple[frozenset[str], list[ValidationIssue]]:
+        """Validate each project note separately and collect the usable identifiers."""
+        directory = self.settings.projects_dir
+        if not directory.is_dir():
+            return frozenset(), []
+        identifiers: set[str] = set()
+        issues: list[ValidationIssue] = []
+        for path in sorted(directory.glob("*.md")):
+            try:
+                identifiers.add(parse_project_note(path).project_id)
+            except ValidationError as error:
+                issues.append(self._issue(path, "project-note-invalid", str(error)))
+        return frozenset(identifiers), issues
+
+    def _project_issues(
+        self, path: Path, note: PaperNote, project_ids: frozenset[str]
+    ) -> list[ValidationIssue]:
+        issues: list[ValidationIssue] = []
+        for field, values in (
+            ("projects", note.projects),
+            ("ai_suggested_projects", note.ai_suggested_projects),
+        ):
+            for project_id in sorted({item for item in values if values.count(item) > 1}):
+                issues.append(
+                    self._issue(
+                        path,
+                        "project-duplicate",
+                        f"{field} contains duplicate project {project_id!r}.",
+                    )
+                )
+            for project_id in values:
+                if PROJECT_ID.fullmatch(project_id) is None:
+                    issues.append(
+                        self._issue(
+                            path,
+                            "project-invalid",
+                            f"Invalid {field} entry {project_id!r}. "
+                            "Project identifiers use lowercase kebab-case.",
+                        )
+                    )
+                elif project_id not in project_ids:
+                    issues.append(
+                        self._issue(
+                            path,
+                            "project-unknown",
+                            f"{field} references {project_id!r}, "
+                            "which has no note in the Projects folder.",
+                        )
+                    )
+        for project_id in note.ai_suggested_projects:
+            if project_id in note.projects:
+                issues.append(
+                    self._issue(
+                        path,
+                        "project-suggested-approved",
+                        f"Project {project_id!r} is already approved; "
+                        "remove it from ai_suggested_projects.",
+                    )
+                )
+        return issues
+
+    def _project_index_issues(self) -> list[ValidationIssue]:
+        """Report derived project links that no longer match paper frontmatter."""
+        try:
+            report = ProjectService(self.settings, self.markdown_store).index(dry_run=True)
+        except ResearchKBError as error:
+            return [self._issue(self.settings.projects_dir, "project-index-unreadable", str(error))]
+        return [
+            self._issue(
+                path,
+                "project-index-stale",
+                "Derived project links are out of date. Run: research projects index.",
+            )
+            for path in report.changed
+        ]
 
     def _extraction_issues(
         self, path: Path, note: PaperNote, has_review: bool

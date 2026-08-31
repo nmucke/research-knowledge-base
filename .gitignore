@@ -38,5 +38,7 @@ vault/Literature/Papers/*
 !vault/Literature/Papers/.gitkeep
 
 # Obsidian per-machine interface state
-vault/.obsidian/workspace*.json
-vault/.obsidian/cache/
+vault/.obsidian/*
+
+# Vault files
+vault/Literature/Papers/*

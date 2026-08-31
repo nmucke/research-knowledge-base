@@ -11,6 +11,9 @@ Zotero when you explicitly ask it to.
 
 Claude Code and Codex read the extracted paper text and write only AI-owned
 fields and the managed AI-review block; they follow `CLAUDE.md` and `AGENTS.md`.
+Two skills carry the workflows: `paper-review` reviews a paper and proposes tags
+and projects, `project-curation` creates a project or finds its papers. Neither
+approves anything; you do.
 
 ## Requirements
 
@@ -83,6 +86,7 @@ research-knowledge-base/     project root (run the CLI here)
 │   ├── Literature/
 │   │   ├── Papers/          one Markdown note per paper
 │   │   └── Dashboards/      Obsidian Bases views
+│   ├── Projects/            one Markdown note per project, plus dashboard.base
 │   └── System/
 │       ├── Templates/
 │       ├── reading-profile.md
@@ -113,27 +117,62 @@ tag pushes.
 
 ## The literature workflow
 
+Steps 4–6 happen inside Claude Code or Codex through the `paper-review` skill.
+The CLI commands named there are the agent's, not yours.
+
 1. Save a paper with the Zotero Connector and confirm Zotero has metadata and a
    PDF.
 2. Run `uv run research sync` to create or update the paper note.
 3. Open the note in Obsidian and optionally set `human_read_status: queued`,
    `human_priority`, and `human_relevance`.
-4. Run `uv run research review-context <citekey>` and ask Claude Code or Codex
-   to review the paper.
-5. Run `uv run research validate <citekey>` until it passes.
-6. Approve tags: the agent lists its applied and suggested tags as a numbered
-   list, you reply with the numbers to accept, and it moves those tags into
-   `tags`, defines each accepted suggestion in `vault/System/tag-registry.md`,
-   and clears the ruled-on entries from `ai_suggested_tags`. You can also do
-   this by hand; nothing is approved until it appears in `tags`.
+4. Ask the agent to **review `<citekey>`**. The skill runs `review-context`,
+   reads the extracted text, your reading profile, the tag registry, and every
+   active project note, writes the AI-owned frontmatter and the managed
+   AI-review block, and runs `validate` until it passes. It never touches your
+   reading state or `## Human notes`.
+5. Approve what it proposes. The agent ends with one numbered list: applied
+   tags, suggested tags, and the projects it judged the paper relevant to.
+   Reply with the numbers you accept, or `all` / `none`.
+6. The agent promotes only what you accepted into `tags` and `projects`, defines
+   each accepted tag in `vault/System/tag-registry.md`, clears the ruled-on
+   suggestions, and runs `projects index`. Nothing is approved until it appears
+   in `tags` or `projects`.
 7. Run `uv run research push-tags <citekey> --dry-run`, then
-   `uv run research push-tags <citekey>`.
+   `uv run research push-tags <citekey>`. Tags reach Zotero only on this
+   explicit request; projects never do.
 8. Read the paper yourself, set `human_read_status: read` with `human_read_date`
    and `human_rating`, and write under `## Human notes`. The AI review stays
    unchanged next to your own assessment.
 
 `tests/integration/test_acceptance.py` drives this entire sequence, including a
 changed PDF marking the review outdated, against a fake Zotero API.
+
+## The project workflow
+
+Projects are created and populated through the `project-curation` skill. See
+[Projects](#projects) for the file layout and the derived links.
+
+1. Ask the agent to **start a project**. It runs `projects list` to avoid a
+   duplicate, then asks you once for the description, goals, and what is in and
+   out of scope. It writes nothing you did not say; an empty section is better
+   than an assumed one.
+2. Approve the `project_id` and tags it proposes. The identifier becomes the
+   filename; the tags must already exist in `vault/System/tag-registry.md`.
+3. The agent writes `vault/Projects/<project-id>.md` from the template, runs
+   `projects index` and `validate`, and reports the path.
+4. From then on every `paper-review` weighs the paper against each active
+   project and offers the relevant ones for approval, as step 5 above.
+5. To back-fill papers reviewed before the project existed, ask the agent to
+   **find papers for `<project-id>`**. It runs `projects candidates`, reads the
+   ranked notes, and proposes at most ten as one numbered list. Tag overlap
+   decides only where it looks; your stated goals and scope decide what it
+   proposes.
+6. Approve by number. The agent adds the project to each accepted paper's
+   `projects`, runs `projects index`, and validates.
+
+You own the brief. The agent never writes a project's description, goals, or
+scope with content you did not give it, never creates a project note unprompted,
+and never promotes a paper into `projects` without your approval.
 
 ## Inspect an item
 
@@ -185,7 +224,7 @@ uv run research review-context chen2025flowdas
 ```
 
 This refreshes extraction when needed and prints the paper note, extracted text,
-reading profile, and tag registry paths. `CLAUDE.md` and `AGENTS.md` contain the
+reading profile, tag registry, and active project-note paths. `CLAUDE.md` and `AGENTS.md` contain the
 same constrained review contract; `vault/System/Templates/Paper.md` is the
 canonical paper-note template. The command also stores a one-shot snapshot of human-owned
 fields and a hash of the Human notes section. A successful targeted validation
@@ -207,7 +246,8 @@ uv run research validate chen2025flowdas
 
 Validation checks the paper schema, status values, managed blocks, human/AI
 ownership rules, review completeness and provenance, extraction consistency,
-and controlled tags. It reports all discovered issues; validation errors produce
+controlled tags, and project references. A whole-vault run also validates the
+project notes themselves and reports derived project links that are out of date. It reports all discovered issues; validation errors produce
 a nonzero exit status, while warnings do not.
 
 Unknown tags are errors by default. To report unknown tags as warnings instead,
@@ -219,6 +259,30 @@ UNKNOWN_TAG_POLICY=warning
 
 This policy changes only the severity of unknown tags. It does not approve,
 promote, or push tags to Zotero.
+
+## Projects
+
+`vault/Projects/` holds one note per research project — a description, goals,
+scope, and controlled tags from the same registry the papers use. Create one
+from `vault/System/Templates/Project.md`, named after its `project_id`.
+
+A paper's `projects` frontmatter is the single source of truth for a link. Two
+managed blocks are derived from it: `MANAGED:PROJECTS` in the paper note and
+`MANAGED:PROJECT_PAPERS` in the project note. Never edit either by hand.
+
+```sh
+uv run research projects index              # rebuild both after any projects change
+uv run research projects index --dry-run    # report stale links without writing
+uv run research projects list               # projects and their link counts
+uv run research projects candidates <id>    # rank unlinked papers by tag overlap
+```
+
+`validate` reports an out-of-date block as `project-index-stale`. The paper-note
+block appears the first time a paper is linked, so unlinked notes stay clean.
+
+Projects are vault-local and are never pushed to Zotero. Open
+`vault/Projects/dashboard.base` in Obsidian for three views: every project, every
+linked paper, and reviewed papers not yet linked to one.
 
 ## Reconcile approved tags with Zotero
 
@@ -290,6 +354,9 @@ Obsidian's Settings, then open a `.base` file from the File Explorer.
 | `AI Reviewed.base` | Papers with an AI review and its recommendation details. |
 | `Recommended Reading.base` | Unread or queued papers recommended as `must-read` or `read`. |
 | `Human Read.base` | Contains **Read** and **Read but AI-unverified** views: completed papers, and completed papers whose AI review still needs human verification. |
+
+`vault/Projects/dashboard.base` is a separate Bases file next to the project
+notes; see [Projects](#projects).
 
 ## Generated state
 

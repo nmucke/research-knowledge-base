@@ -18,6 +18,7 @@ from research_kb.config import LibraryType, Settings
 from research_kb.exceptions import PDFExtractionError, PDFNotFoundError
 from research_kb.markdown_store import MarkdownStore, PaperDocument
 from research_kb.models import ExtractionMetadata
+from research_kb.project_registry import load_projects
 
 _PAGE_MARKER = re.compile(r"(?m)^<!-- PAGE ([1-9][0-9]*) -->$")
 _LOW_TEXT_CHARACTERS = 100
@@ -129,6 +130,7 @@ class ReviewContext:
     extracted_paper: Path
     reading_profile: Path
     tag_registry: Path
+    active_projects: tuple[Path, ...] = ()
 
 
 class ExtractionService:
@@ -244,6 +246,11 @@ class ExtractionService:
             extracted_paper=extracted.output_path,
             reading_profile=self.settings.reading_profile_path,
             tag_registry=self.settings.tag_registry_path,
+            active_projects=tuple(
+                self.settings.projects_dir / f"{project.project_id}.md"
+                for project in load_projects(self.settings.projects_dir)
+                if project.status == "active"
+            ),
         )
 
     def cache_path(self, citekey: str) -> Path:

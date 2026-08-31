@@ -17,8 +17,13 @@ from research_kb.exceptions import ManagedBlockError, MarkdownParseError
 from research_kb.models import PaperNote
 
 _CITEKEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._$^-]*\Z")
-_MARKER = re.compile(r"<!-- (BEGIN|END) MANAGED:(AI_REVIEW|ZOTERO_ANNOTATIONS) -->")
+_MARKER = re.compile(
+    r"<!-- (BEGIN|END) MANAGED:(AI_REVIEW|ZOTERO_ANNOTATIONS|PROJECT_PAPERS|PROJECTS) -->"
+)
+# Blocks every paper note must carry.  PROJECTS is optional: it is inserted
+# only once a paper is actually linked to a project.
 _BLOCKS = frozenset(("AI_REVIEW", "ZOTERO_ANNOTATIONS"))
+_WRITABLE_BLOCKS = _BLOCKS | frozenset(("PROJECTS", "PROJECT_PAPERS"))
 
 # These are copied from Zotero (or resolved from a Zotero attachment).  Keeping
 # this allow-list here makes it impossible for synchronisation to overwrite the
@@ -63,6 +68,7 @@ _AI_FIELDS = frozenset(
         "ai_recommendation_confidence",
         "ai_applied_tags",
         "ai_suggested_tags",
+        "ai_suggested_projects",
     )
 )
 _TAG_SYNC_FIELDS = frozenset(
@@ -213,11 +219,7 @@ class MarkdownStore:
         except PydanticValidationError as exc:
             raise MarkdownParseError(f"{path}: invalid paper frontmatter: {exc}") from exc
         pairs = self._marker_pairs(path, body, require_all=True)
-        begin, end = pairs[block_name]
-        begin_end = begin.end()
-        replacement = content.strip("\n")
-        inner = f"\n\n{replacement}\n\n" if replacement else "\n\n"
-        new_body = f"{body[:begin_end]}{inner}{body[end.start():]}"
+        new_body = _splice(body, pairs[block_name], content)
         self._marker_pairs(path, new_body, require_all=True)
         new_text = f"{text[:closing + 5]}{new_body}"
         if new_text == text:
@@ -382,3 +384,83 @@ class MarkdownStore:
                 temporary_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def read_frontmatter(path: Path) -> tuple[dict[str, Any], str]:
+    """Parse any vault note into its frontmatter mapping and its body."""
+    metadata, body, _start, _end = MarkdownStore._split_frontmatter(path, MarkdownStore._read(path))
+    return metadata, body
+
+
+def _read_body(path: Path) -> tuple[str, str]:
+    """Split a note into its frontmatter prefix and its body.
+
+    Managed blocks live only in the body.  Splitting first keeps a marker that
+    happens to appear inside Zotero-owned frontmatter -- an abstract, say --
+    from being treated as a block and overwritten.
+    """
+    text = MarkdownStore._read(path)
+    _metadata, body, _start, closing = MarkdownStore._split_frontmatter(path, text)
+    return text[: closing + 5], body
+
+
+def _splice(text: str, pair: tuple[re.Match[str], re.Match[str]], content: str) -> str:
+    """Return text with one managed block's content replaced."""
+    begin, end = pair
+    replacement = content.strip("\n")
+    inner = f"\n\n{replacement}\n\n" if replacement else "\n\n"
+    return f"{text[:begin.end()]}{inner}{text[end.start():]}"
+
+
+def replace_block(path: Path, block_name: str, content: str, *, dry_run: bool = False) -> bool:
+    """Rewrite one managed block in any vault note, leaving the rest untouched.
+
+    Returns whether the note changed; with ``dry_run`` nothing is written, so
+    the answer is exactly what a real run would do.
+    """
+    if block_name not in _WRITABLE_BLOCKS:
+        raise ManagedBlockError(f"{path}: unsupported managed block {block_name!r}")
+    prefix, body = _read_body(path)
+    pairs = MarkdownStore._marker_pairs(path, body, require_all=False)
+    if block_name not in pairs:
+        raise ManagedBlockError(f"{path}: missing managed block {block_name}")
+    new_body = _splice(body, pairs[block_name], content)
+    if new_body == body:
+        return False
+    if not dry_run:
+        MarkdownStore._atomic_write(path, f"{prefix}{new_body}")
+    return True
+
+
+def block_content(path: Path, block_name: str) -> str | None:
+    """Return one managed block's current content, or None when it is absent."""
+    _prefix, body = _read_body(path)
+    pairs = MarkdownStore._marker_pairs(path, body, require_all=False)
+    if block_name not in pairs:
+        return None
+    begin, end = pairs[block_name]
+    return body[begin.end() : end.start()].strip("\n")
+
+
+def ensure_block(path: Path, block_name: str, heading: str, before: str) -> bool:
+    """Add an empty managed block under its heading when the note has none."""
+    prefix, body = _read_body(path)
+    if f"<!-- BEGIN MANAGED:{block_name} -->" in body:
+        return False
+    markers = f"<!-- BEGIN MANAGED:{block_name} -->\n\n<!-- END MANAGED:{block_name} -->\n\n"
+    existing = body.find(f"\n## {heading}\n")
+    if existing >= 0:
+        # The user already wrote this heading; add the block under it rather
+        # than a second heading of the same name.
+        opening = existing + len(f"\n## {heading}\n")
+        new_body = f"{body[:opening]}\n{markers}{body[opening:]}"
+    else:
+        anchor = body.find(f"\n## {before}\n")
+        section = f"## {heading}\n\n{markers}"
+        if anchor < 0:
+            new_body = f"{body.rstrip(chr(10))}\n\n{section.rstrip(chr(10))}\n"
+        else:
+            new_body = f"{body[: anchor + 1]}{section}{body[anchor + 1 :]}"
+    MarkdownStore._marker_pairs(path, new_body, require_all=False)
+    MarkdownStore._atomic_write(path, f"{prefix}{new_body}")
+    return True

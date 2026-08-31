@@ -1,24 +1,24 @@
+filters:
+  and:
+    - file.inFolder("Literature/Papers")
+    - file.ext == "md"
+    - type == "paper"
 formulas:
-  paper: 'file.asLink(title)'
+  paper: file.asLink(title)
 properties:
   formula.paper:
     displayName: Title
-filters:
-  and:
-    - 'file.inFolder("Literature/Papers")'
-    - 'file.ext == "md"'
-    - 'type == "paper"'
 views:
   - type: table
     name: AI Reviewed
     filters:
       and:
-        - 'ai_review_status == "reviewed"'
+        - ai_review_status == "reviewed"
     order:
       - formula.paper
-      - note.ai_recommendation
-      - note.ai_relevance
-      - note.ai_recommendation_confidence
-      - note.ai_review_scope
-      - note.ai_review_agent
-      - note.ai_review_date
+      - ai_recommendation
+      - ai_relevance
+      - ai_recommendation_confidence
+      - ai_review_scope
+      - ai_review_agent
+      - ai_review_date

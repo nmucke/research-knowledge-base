@@ -134,6 +134,16 @@ def validate_managed_review(note: PaperNote, review_text: str) -> tuple[Contract
                     f"Managed review Tags section is missing {label!r}.",
                 )
             )
+    if re.search(r"(?m)^### Projects[ \t]*$", review_text) is not None:
+        projects = _section(review_text, "Projects")
+        for label in ("Relevant", "Considered"):
+            if re.search(rf"(?m)^\*\*{label}:\*\*[ \t]*.*$", projects) is None:
+                violations.append(
+                    ContractViolation(
+                        "review-structure-invalid",
+                        f"Managed review Projects section is missing {label!r}.",
+                    )
+                )
     return tuple(violations)
 
 

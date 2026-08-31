@@ -195,6 +195,8 @@ class PaperNote(DomainModel):
     tags: tuple[str, ...] = ()
     ai_applied_tags: tuple[str, ...] = ()
     ai_suggested_tags: tuple[str, ...] = ()
+    projects: tuple[str, ...] = ()
+    ai_suggested_projects: tuple[str, ...] = ()
     zotero_tag_sync: Literal["not-synced", "synced"] = "not-synced"
     zotero_tag_sync_date: date | None = None
     zotero_missing: StrictBool = False
@@ -407,6 +409,36 @@ class ExtractionMetadata(DomainModel):
 
 
 TAG_NAMESPACES = ("domain", "method", "task", "property", "model", "data")
+PROJECT_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+class ProjectNote(DomainModel):
+    """Validated frontmatter for a single project note."""
+
+    schema_version: Literal[1] = 1
+    type: Literal["project"] = "project"
+    project_id: str
+    title: str
+    status: Literal["active", "paused", "done", "archived"] = "active"
+    started: date | None = None
+    target: date | None = None
+    tags: tuple[str, ...] = ()
+
+    @field_validator("project_id")
+    @classmethod
+    def project_id_must_be_a_slug(cls, value: str) -> str:
+        """Keep the identifier safe as both a filename stem and a frontmatter value."""
+        if PROJECT_ID.fullmatch(value) is None:
+            raise ValueError("project_id must be lowercase kebab-case")
+        return value
+
+    @field_validator("title")
+    @classmethod
+    def title_must_not_be_blank(cls, value: str) -> str:
+        """Require the title identity field to contain visible text."""
+        if not value.strip():
+            raise ValueError("title must not be blank")
+        return value
 
 
 class TagRegistryEntry(DomainModel):
