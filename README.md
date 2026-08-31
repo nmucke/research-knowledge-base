@@ -11,9 +11,9 @@ Zotero when you explicitly ask it to.
 
 Claude Code and Codex read the extracted paper text and write only AI-owned
 fields and the managed AI-review block; they follow `CLAUDE.md` and `AGENTS.md`.
-Two skills carry the workflows: `paper-review` reviews a paper and proposes its
-tags and projects, and `project-curation` creates a project note or finds the
-papers that belong to one. Neither approves anything; you do.
+Two skills carry the workflows: `paper-review` reviews a paper and proposes tags
+and projects, `project-curation` creates a project or finds its papers. Neither
+approves anything; you do.
 
 ## Requirements
 
@@ -126,12 +126,11 @@ tag pushes.
    to review the paper.
 5. Run `uv run research validate <citekey>` until it passes.
 6. Approve tags and projects: the agent lists its applied and suggested tags,
-   and the projects it judged the paper relevant to, as one numbered list. You
-   reply with the numbers to accept, and it moves those tags into `tags`,
-   defines each accepted suggestion in `vault/System/tag-registry.md`, adds the
-   accepted projects to `projects`, and clears the ruled-on entries from
-   `ai_suggested_tags` and `ai_suggested_projects`. You can also do this by
-   hand; nothing is approved until it appears in `tags` or `projects`.
+   and the projects it judged the paper relevant to, as one numbered list. Reply
+   with the numbers to accept, and it promotes those into `tags` and `projects`,
+   defines each accepted tag in `vault/System/tag-registry.md`, and clears the
+   ruled-on suggestions. Nothing is approved until it appears in `tags` or
+   `projects`.
 7. Run `uv run research push-tags <citekey> --dry-run`, then
    `uv run research push-tags <citekey>`.
 8. Read the paper yourself, set `human_read_status: read` with `human_read_date`
@@ -229,44 +228,29 @@ promote, or push tags to Zotero.
 
 ## Projects
 
-`vault/Projects/` holds one Markdown note per research project, each carrying a
-description, goals, scope, and controlled tags from the same registry the papers
-use. Create one from `vault/System/Templates/Project.md`, naming the file after
-its `project_id`.
+`vault/Projects/` holds one note per research project — a description, goals,
+scope, and controlled tags from the same registry the papers use. Create one
+from `vault/System/Templates/Project.md`, named after its `project_id`.
 
-A paper's `projects` frontmatter is the single source of truth for a link.
-Everything else is derived from it:
-
-- the `MANAGED:PROJECTS` block in the paper note, listing its projects, and
-- the `MANAGED:PROJECT_PAPERS` block in each project note, listing its papers.
-
-Rebuild both after changing any `projects` field:
+A paper's `projects` frontmatter is the single source of truth for a link. Two
+managed blocks are derived from it: `MANAGED:PROJECTS` in the paper note and
+`MANAGED:PROJECT_PAPERS` in the project note. Never edit either by hand.
 
 ```sh
-uv run research projects index
-uv run research projects index --dry-run   # report stale links without writing
+uv run research projects index              # rebuild both after any projects change
+uv run research projects index --dry-run    # report stale links without writing
+uv run research projects list               # projects and their link counts
+uv run research projects candidates <id>    # rank unlinked papers by tag overlap
 ```
 
-Never edit either block by hand; `research validate` reports a block that no
-longer matches the frontmatter as `project-index-stale`. The paper-note block is
-inserted the first time a paper is linked, so notes without projects stay clean.
+`validate` reports an out-of-date block as `project-index-stale`. The paper-note
+block appears the first time a paper is linked, so unlinked notes stay clean.
+`candidates` only suggests where to look; relevance to the project's stated goals
+and scope decides.
 
-List the projects and their link counts, or rank the unlinked papers that most
-resemble a project's controlled tags:
-
-```sh
-uv run research projects list
-uv run research projects candidates energy-consistent-turbulence
-```
-
-`candidates` is a search heuristic for the agent's `project-curation` skill, not
-a judgement: tag overlap suggests where to look, and relevance to the project's
-stated goals and scope decides.
-
-Projects are vault-local. They are never pushed to Zotero.
-
-Open `vault/Projects/dashboard.base` in Obsidian for three Bases views: every
-project, every linked paper, and reviewed papers not yet linked to any project.
+Projects are vault-local and are never pushed to Zotero. Open
+`vault/Projects/dashboard.base` in Obsidian for three views: every project, every
+linked paper, and reviewed papers not yet linked to one.
 
 ## Reconcile approved tags with Zotero
 
