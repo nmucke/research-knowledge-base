@@ -210,7 +210,7 @@ class MarkdownStore:
 
     def replace_managed_block(self, path: Path, block_name: str, content: str) -> bool:
         self._validate_note_path(path)
-        if block_name not in _WRITABLE_BLOCKS:
+        if block_name not in _BLOCKS:
             raise ManagedBlockError(f"{path}: unsupported managed block {block_name!r}")
         text = self._read(path)
         metadata, body, _start, closing = self._split_frontmatter(path, text)
@@ -392,6 +392,18 @@ def read_frontmatter(path: Path) -> tuple[dict[str, Any], str]:
     return metadata, body
 
 
+def _read_body(path: Path) -> tuple[str, str]:
+    """Split a note into its frontmatter prefix and its body.
+
+    Managed blocks live only in the body.  Splitting first keeps a marker that
+    happens to appear inside Zotero-owned frontmatter -- an abstract, say --
+    from being treated as a block and overwritten.
+    """
+    text = MarkdownStore._read(path)
+    _metadata, body, _start, closing = MarkdownStore._split_frontmatter(path, text)
+    return text[: closing + 5], body
+
+
 def _splice(text: str, pair: tuple[re.Match[str], re.Match[str]], content: str) -> str:
     """Return text with one managed block's content replaced."""
     begin, end = pair
@@ -400,45 +412,55 @@ def _splice(text: str, pair: tuple[re.Match[str], re.Match[str]], content: str) 
     return f"{text[:begin.end()]}{inner}{text[end.start():]}"
 
 
-def replace_block(path: Path, block_name: str, content: str) -> bool:
-    """Rewrite one managed block in any vault note, leaving the rest untouched."""
+def replace_block(path: Path, block_name: str, content: str, *, dry_run: bool = False) -> bool:
+    """Rewrite one managed block in any vault note, leaving the rest untouched.
+
+    Returns whether the note changed; with ``dry_run`` nothing is written, so
+    the answer is exactly what a real run would do.
+    """
     if block_name not in _WRITABLE_BLOCKS:
         raise ManagedBlockError(f"{path}: unsupported managed block {block_name!r}")
-    text = MarkdownStore._read(path)
-    pairs = MarkdownStore._marker_pairs(path, text, require_all=False)
+    prefix, body = _read_body(path)
+    pairs = MarkdownStore._marker_pairs(path, body, require_all=False)
     if block_name not in pairs:
         raise ManagedBlockError(f"{path}: missing managed block {block_name}")
-    new_text = _splice(text, pairs[block_name], content)
-    if new_text == text:
+    new_body = _splice(body, pairs[block_name], content)
+    if new_body == body:
         return False
-    MarkdownStore._atomic_write(path, new_text)
+    if not dry_run:
+        MarkdownStore._atomic_write(path, f"{prefix}{new_body}")
     return True
 
 
 def block_content(path: Path, block_name: str) -> str | None:
     """Return one managed block's current content, or None when it is absent."""
-    text = MarkdownStore._read(path)
-    pairs = MarkdownStore._marker_pairs(path, text, require_all=False)
+    _prefix, body = _read_body(path)
+    pairs = MarkdownStore._marker_pairs(path, body, require_all=False)
     if block_name not in pairs:
         return None
     begin, end = pairs[block_name]
-    return text[begin.end() : end.start()].strip("\n")
+    return body[begin.end() : end.start()].strip("\n")
 
 
 def ensure_block(path: Path, block_name: str, heading: str, before: str) -> bool:
-    """Add an empty managed block under its own heading when the note has none."""
-    text = MarkdownStore._read(path)
-    if f"<!-- BEGIN MANAGED:{block_name} -->" in text:
+    """Add an empty managed block under its heading when the note has none."""
+    prefix, body = _read_body(path)
+    if f"<!-- BEGIN MANAGED:{block_name} -->" in body:
         return False
-    section = (
-        f"## {heading}\n\n"
-        f"<!-- BEGIN MANAGED:{block_name} -->\n\n<!-- END MANAGED:{block_name} -->\n\n"
-    )
-    anchor = text.find(f"\n## {before}\n")
-    if anchor < 0:
-        new_text = f"{text.rstrip(chr(10))}\n\n{section.rstrip(chr(10))}\n"
+    markers = f"<!-- BEGIN MANAGED:{block_name} -->\n\n<!-- END MANAGED:{block_name} -->\n\n"
+    existing = body.find(f"\n## {heading}\n")
+    if existing >= 0:
+        # The user already wrote this heading; add the block under it rather
+        # than a second heading of the same name.
+        opening = existing + len(f"\n## {heading}\n")
+        new_body = f"{body[:opening]}\n{markers}{body[opening:]}"
     else:
-        new_text = f"{text[: anchor + 1]}{section}{text[anchor + 1 :]}"
-    MarkdownStore._marker_pairs(path, new_text, require_all=False)
-    MarkdownStore._atomic_write(path, new_text)
+        anchor = body.find(f"\n## {before}\n")
+        section = f"## {heading}\n\n{markers}"
+        if anchor < 0:
+            new_body = f"{body.rstrip(chr(10))}\n\n{section.rstrip(chr(10))}\n"
+        else:
+            new_body = f"{body[: anchor + 1]}{section}{body[anchor + 1 :]}"
+    MarkdownStore._marker_pairs(path, new_body, require_all=False)
+    MarkdownStore._atomic_write(path, f"{prefix}{new_body}")
     return True

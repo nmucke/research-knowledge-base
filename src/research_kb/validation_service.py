@@ -26,7 +26,7 @@ from research_kb.models import (
     PaperNote,
     ReviewSnapshot,
 )
-from research_kb.project_registry import load_projects
+from research_kb.project_registry import parse_project_note
 from research_kb.project_service import ProjectService
 from research_kb.review_contract import validate_managed_review
 from research_kb.review_snapshot import ReviewSnapshotStore
@@ -137,15 +137,8 @@ class ValidationService:
                 )
             )
 
-        try:
-            project_ids = frozenset(
-                project.project_id for project in load_projects(self.settings.projects_dir)
-            )
-        except ValidationError as error:
-            project_ids = None
-            issues.append(
-                self._issue(self.settings.projects_dir, "project-note-invalid", str(error))
-            )
+        project_ids, project_issues = self._project_notes()
+        issues.extend(project_issues)
 
         for path in paths:
             issues.extend(self._validate_path(path, registry_tags, project_ids))
@@ -220,7 +213,7 @@ class ValidationService:
         self,
         path: Path,
         registry_tags: frozenset[str] | None,
-        project_ids: frozenset[str] | None = None,
+        project_ids: frozenset[str] = frozenset(),
     ) -> list[ValidationIssue]:
         if not self._safe_note_path(path):
             return [
@@ -500,8 +493,22 @@ class ValidationService:
                     )
         return issues
 
+    def _project_notes(self) -> tuple[frozenset[str], list[ValidationIssue]]:
+        """Validate each project note separately and collect the usable identifiers."""
+        directory = self.settings.projects_dir
+        if not directory.is_dir():
+            return frozenset(), []
+        identifiers: set[str] = set()
+        issues: list[ValidationIssue] = []
+        for path in sorted(directory.glob("*.md")):
+            try:
+                identifiers.add(parse_project_note(path).project_id)
+            except ValidationError as error:
+                issues.append(self._issue(path, "project-note-invalid", str(error)))
+        return frozenset(identifiers), issues
+
     def _project_issues(
-        self, path: Path, note: PaperNote, project_ids: frozenset[str] | None
+        self, path: Path, note: PaperNote, project_ids: frozenset[str]
     ) -> list[ValidationIssue]:
         issues: list[ValidationIssue] = []
         for field, values in (
@@ -526,7 +533,7 @@ class ValidationService:
                             "Project identifiers use lowercase kebab-case.",
                         )
                     )
-                elif project_ids is not None and project_id not in project_ids:
+                elif project_id not in project_ids:
                     issues.append(
                         self._issue(
                             path,

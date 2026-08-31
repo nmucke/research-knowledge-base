@@ -74,7 +74,7 @@ def test_projects_index_writes_the_derived_blocks(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "updated 2 note(s)." in result.stdout
-    assert block_content(paper, "PROJECTS") == "- [[turbulence-priors|Turbulence priors]] — active"
+    assert block_content(paper, "PROJECTS") == "- [[turbulence-priors]]"
 
 
 def test_projects_index_dry_run_reports_without_writing(tmp_path: Path) -> None:

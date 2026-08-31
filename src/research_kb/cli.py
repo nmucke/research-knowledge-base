@@ -418,10 +418,11 @@ def projects_index(
     except ResearchKBError as error:
         _projects_error(logger, error)
     logger.info(
-        "projects_index dry_run=%s changed=%d unknown=%d",
+        "projects_index dry_run=%s changed=%d unknown=%d skipped=%d",
         dry_run,
         len(report.changed),
         len(report.unknown),
+        len(report.skipped),
     )
     verb = "would update" if dry_run else "updated"
     typer.echo(f"{verb} {len(report.changed)} note(s).")
@@ -429,6 +430,11 @@ def projects_index(
         typer.echo(f"  {path.name}")
     for citekey, project_id in report.unknown:
         typer.echo(f"Warning: {citekey} references unknown project {project_id!r}.", err=True)
+    for path in report.skipped:
+        typer.echo(
+            f"Warning: skipped unreadable note {path.name}; its links are not indexed.",
+            err=True,
+        )
 
 
 @projects_app.command("candidates")
@@ -649,24 +655,30 @@ def _print_extraction_result(result: ExtractionResult) -> None:
 def _print_review_context(context: ReviewContext, vault_path: Path) -> None:
     """Print stable vault-relative paths when possible."""
     fields = (
-        ("Paper note", (context.paper_note,)),
-        ("Extracted paper", (context.extracted_paper,)),
-        ("Reading profile", (context.reading_profile,)),
-        ("Tag registry", (context.tag_registry,)),
-        ("Active projects", context.active_projects),
+        ("Paper note", context.paper_note),
+        ("Extracted paper", context.extracted_paper),
+        ("Reading profile", context.reading_profile),
+        ("Tag registry", context.tag_registry),
     )
-    for index, (label, paths) in enumerate(fields):
+    for index, (label, path) in enumerate(fields):
         if index:
             typer.echo()
         typer.echo(f"{label}:")
-        if not paths:
-            typer.echo("(none)")
-        for path in paths:
-            try:
-                displayed = path.relative_to(vault_path)
-            except ValueError:
-                displayed = path
-            typer.echo(str(displayed))
+        typer.echo(str(_vault_relative(path, vault_path)))
+    typer.echo()
+    typer.echo("Active projects:")
+    if not context.active_projects:
+        typer.echo("(none)")
+    for path in context.active_projects:
+        typer.echo(str(_vault_relative(path, vault_path)))
+
+
+def _vault_relative(path: Path, vault_path: Path) -> Path:
+    """Prefer a stable vault-relative path when the file lives in the vault."""
+    try:
+        return path.relative_to(vault_path)
+    except ValueError:
+        return path
 
 
 def _log_validation_report(logger: logging.Logger, report: ValidationReport) -> None:

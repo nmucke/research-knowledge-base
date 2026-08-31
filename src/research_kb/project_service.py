@@ -27,14 +27,11 @@ NO_PROJECTS = "No projects are linked to this paper."
 
 @dataclass(frozen=True)
 class ProjectIndexReport:
-    """Which notes the index rewrote, and which references point nowhere."""
+    """Which notes the index rewrote, which references point nowhere, what it skipped."""
 
     changed: tuple[Path, ...] = ()
     unknown: tuple[tuple[str, str], ...] = ()
-
-    @property
-    def stale(self) -> bool:
-        return bool(self.changed)
+    skipped: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -59,23 +56,29 @@ class ProjectService:
         return load_projects(self.settings.projects_dir)
 
     def papers(self) -> tuple[tuple[Path, PaperNote], ...]:
-        """Every readable paper note in filename order.
+        """Every readable paper note in filename order."""
+        return self._read_papers()[0]
 
-        Notes that cannot be parsed are skipped rather than blocking the index;
-        ``research validate`` is the command that reports them.
+    def _read_papers(self) -> tuple[tuple[tuple[Path, PaperNote], ...], tuple[Path, ...]]:
+        """Every readable paper note, and the notes that could not be parsed.
+
+        A note that cannot be parsed is skipped rather than blocking the index.
+        Its links vanish from the derived blocks, so the caller reports it;
+        ``research validate`` explains what is actually wrong with it.
         """
         found: list[tuple[Path, PaperNote]] = []
+        skipped: list[Path] = []
         for path in sorted(self.markdown_store.papers_dir.glob("*.md")):
             try:
                 found.append((path, self.markdown_store.parse(path).note))
             except (ResearchKBError, ValueError, OSError):
-                continue
-        return tuple(found)
+                skipped.append(path)
+        return tuple(found), tuple(skipped)
 
     def index(self, *, dry_run: bool = False) -> ProjectIndexReport:
         """Rewrite every derived block that no longer matches the paper frontmatter."""
         projects = self.projects()
-        papers = self.papers()
+        papers, skipped = self._read_papers()
         known = {project.project_id: project for project in projects}
         changed: list[Path] = []
         unknown: list[tuple[str, str]] = []
@@ -85,7 +88,7 @@ class ProjectService:
             path = self.settings.projects_dir / f"{project.project_id}.md"
             if not dry_run:
                 ensure_block(path, "PROJECT_PAPERS", "Related papers", "Notes")
-            if self._write(path, "PROJECT_PAPERS", _render_papers(linked), dry_run=dry_run):
+            if replace_block(path, "PROJECT_PAPERS", _render_papers(linked), dry_run=dry_run):
                 changed.append(path)
 
         for path, note in papers:
@@ -101,12 +104,12 @@ class ProjectService:
                 if dry_run:
                     changed.append(path)
                     continue
-                ensure_block(path, "PROJECTS", "Projects", "AI review")
-            content = _render_projects(note.projects, known)
-            if self._write(path, "PROJECTS", content, dry_run=dry_run):
+                ensure_block(path, "PROJECTS", "Projects", "Zotero annotations")
+            content = _render_projects(note.projects)
+            if replace_block(path, "PROJECTS", content, dry_run=dry_run):
                 changed.append(path)
 
-        return ProjectIndexReport(changed=tuple(changed), unknown=tuple(unknown))
+        return ProjectIndexReport(changed=tuple(changed), unknown=tuple(unknown), skipped=skipped)
 
     def candidates(self, project_id: str, limit: int = 20) -> tuple[ProjectCandidate, ...]:
         """Rank unlinked papers by controlled-tag overlap for an agent to judge."""
@@ -133,32 +136,18 @@ class ProjectService:
         )
         return tuple(scored[:limit])
 
-    @staticmethod
-    def _write(path: Path, block_name: str, content: str, *, dry_run: bool) -> bool:
-        if dry_run:
-            return block_content(path, block_name) != content
-        return replace_block(path, block_name, content)
-
 
 def _render_papers(notes: list[PaperNote]) -> str:
     if not notes:
         return NO_PAPERS
-    ordered = sorted(notes, key=lambda note: (-(note.year or 0), note.citekey))
-    return "\n".join(
-        f"- [[{note.citekey}|{note.title}]] — {note.year or 'n.d.'} · "
-        f"{note.human_read_status} · {note.ai_recommendation or 'not reviewed'}"
-        for note in ordered
-    )
+    return "\n".join(f"- [[{note.citekey}]]" for note in sorted(notes, key=_citekey))
 
 
-def _render_projects(project_ids: tuple[str, ...], known: dict[str, ProjectNote]) -> str:
+def _render_projects(project_ids: tuple[str, ...]) -> str:
     if not project_ids:
         return NO_PROJECTS
-    lines = []
-    for project_id in sorted(project_ids):
-        project = known.get(project_id)
-        if project is None:
-            lines.append(f"- [[{project_id}]] — unknown project")
-        else:
-            lines.append(f"- [[{project_id}|{project.title}]] — {project.status}")
-    return "\n".join(lines)
+    return "\n".join(f"- [[{project_id}]]" for project_id in sorted(project_ids))
+
+
+def _citekey(note: PaperNote) -> str:
+    return note.citekey

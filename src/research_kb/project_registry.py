@@ -17,8 +17,8 @@ def parse_project_note(path: Path) -> ProjectNote:
     """Validate one project note without modifying it."""
     try:
         metadata, _body = read_frontmatter(path)
-    except MarkdownParseError as error:
-        raise ValidationError(str(error)) from error
+    except (MarkdownParseError, OSError, ValueError) as error:
+        raise ValidationError(f"{path}: unreadable project note: {error}") from error
     try:
         project = ProjectNote.model_validate(metadata)
     except PydanticValidationError as error:
