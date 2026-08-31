@@ -1,3 +1,6 @@
+filters:
+  and:
+    - file.ext == "md"
 formulas:
   project: file.asLink(title)
   paper: file.asLink(title)
@@ -6,58 +9,55 @@ properties:
     displayName: Project
   formula.paper:
     displayName: Title
-filters:
-  and:
-    - 'file.ext == "md"'
 views:
   - type: table
     name: Projects
     filters:
       and:
-        - 'file.inFolder("Projects")'
-        - 'type == "project"'
+        - file.inFolder("Projects")
+        - type == "project"
     order:
       - formula.project
-      - note.status
-      - note.started
-      - note.target
-      - note.tags
+      - status
+      - started
+      - target
+      - tags
     sort:
-      - property: note.status
+      - property: status
         direction: ASC
-      - property: note.started
+      - property: started
         direction: DESC
   - type: table
     name: Linked papers
     filters:
       and:
-        - 'file.inFolder("Literature/Papers")'
-        - 'type == "paper"'
-        - 'note.projects'
+        - file.inFolder("Literature/Papers")
+        - type == "paper"
+        - note.projects
     order:
       - formula.paper
-      - note.projects
-      - note.year
-      - note.human_read_status
-      - note.ai_recommendation
-      - note.ai_relevance
+      - projects
+      - year
+      - human_read_status
+      - ai_recommendation
+      - ai_relevance
     sort:
-      - property: note.human_read_status
+      - property: human_read_status
         direction: ASC
   - type: table
     name: Unlinked reviewed papers
     filters:
       and:
-        - 'file.inFolder("Literature/Papers")'
-        - 'type == "paper"'
-        - 'ai_review_status == "reviewed"'
-        - '!note.projects'
+        - file.inFolder("Literature/Papers")
+        - type == "paper"
+        - ai_review_status == "reviewed"
+        - "!note.projects"
     order:
       - formula.paper
-      - note.year
-      - note.ai_recommendation
-      - note.ai_relevance
-      - note.tags
+      - year
+      - ai_recommendation
+      - ai_relevance
+      - tags
     sort:
-      - property: note.ai_relevance
+      - property: ai_relevance
         direction: DESC
