@@ -5,9 +5,10 @@ description: Review a paper in the Obsidian literature vault and manage its tags
 
 # Paper review
 
-Follow the project instructions in `CLAUDE.md` as well as this skill; in
-particular the `uv run research ...` command runner and the protected-content
-rules, which this workflow must never violate.
+Follow the project instructions in `CLAUDE.md` (the same file Codex reads as
+`AGENTS.md`) as well as this skill; in particular the `uv run research ...`
+command runner and the protected-content rules, which this workflow must never
+violate.
 
 ## Review workflow
 
