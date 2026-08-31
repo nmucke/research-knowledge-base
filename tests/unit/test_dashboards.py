@@ -49,11 +49,27 @@ def _view(dashboard: Mapping[str, Any], name: str) -> dict[str, Any]:
     return matches[0]
 
 
+def _property(name: str) -> str:
+    """Normalise a column or sort key.
+
+    Obsidian rewrites `note.year` to `year` whenever it saves a dashboard, so
+    both spellings must compare equal or these tests break every time a
+    dashboard is opened.
+    """
+    return name.removeprefix("note.")
+
+
 def _columns(view: Mapping[str, Any]) -> set[str]:
     columns = view["order"]
     assert isinstance(columns, list)
     assert all(isinstance(column, str) for column in columns)
-    return set(columns)
+    return {_property(column) for column in columns}
+
+
+def _sort(view: Mapping[str, Any]) -> list[dict[str, str]]:
+    keys = view["sort"]
+    assert isinstance(keys, list)
+    return [{**key, "property": _property(key["property"])} for key in keys]
 
 
 def test_dashboard_files_are_exactly_the_required_yaml_bases() -> None:
@@ -80,13 +96,13 @@ def test_dashboard_files_are_exactly_the_required_yaml_bases() -> None:
             {'human_read_status == "unread"'},
             {
                 "formula.paper",
-                "note.authors",
-                "note.year",
-                "note.human_priority",
-                "note.human_relevance",
-                "note.ai_review_status",
-                "note.ai_recommendation",
-                "note.date_added",
+                "authors",
+                "year",
+                "human_priority",
+                "human_relevance",
+                "ai_review_status",
+                "ai_recommendation",
+                "date_added",
             },
         ),
         (
@@ -95,12 +111,12 @@ def test_dashboard_files_are_exactly_the_required_yaml_bases() -> None:
             {'ai_review_status == "reviewed"'},
             {
                 "formula.paper",
-                "note.ai_recommendation",
-                "note.ai_relevance",
-                "note.ai_recommendation_confidence",
-                "note.ai_review_scope",
-                "note.ai_review_agent",
-                "note.ai_review_date",
+                "ai_recommendation",
+                "ai_relevance",
+                "ai_recommendation_confidence",
+                "ai_review_scope",
+                "ai_review_agent",
+                "ai_review_date",
             },
         ),
         (
@@ -112,13 +128,13 @@ def test_dashboard_files_are_exactly_the_required_yaml_bases() -> None:
             },
             {
                 "formula.paper",
-                "note.authors",
-                "note.year",
-                "note.ai_recommendation",
-                "note.ai_relevance",
-                "note.ai_recommendation_confidence",
-                "note.human_priority",
-                "note.human_relevance",
+                "authors",
+                "year",
+                "ai_recommendation",
+                "ai_relevance",
+                "ai_recommendation_confidence",
+                "human_priority",
+                "human_relevance",
             },
         ),
     ],
@@ -139,17 +155,17 @@ def test_reading_queue_has_the_required_filter_columns_and_priority_sort() -> No
     assert _filters(view) == {'human_read_status == "queued"'}
     assert _columns(view) == {
         "formula.paper",
-        "note.authors",
-        "note.year",
-        "note.human_priority",
-        "note.human_relevance",
-        "note.ai_recommendation",
-        "note.date_added",
+        "authors",
+        "year",
+        "human_priority",
+        "human_relevance",
+        "ai_recommendation",
+        "date_added",
     }
-    assert view["sort"] == [
-        {"property": "note.human_priority", "direction": "DESC"},
-        {"property": "note.human_relevance", "direction": "DESC"},
-        {"property": "note.date_added", "direction": "ASC"},
+    assert _sort(view) == [
+        {"property": "human_priority", "direction": "DESC"},
+        {"property": "human_relevance", "direction": "DESC"},
+        {"property": "date_added", "direction": "ASC"},
     ]
 
 
@@ -161,9 +177,9 @@ def test_human_read_has_read_and_ai_unverified_views() -> None:
     assert _filters(human_read) == {'human_read_status == "read"'}
     assert _columns(human_read) >= {
         "formula.paper",
-        "note.human_read_date",
-        "note.human_rating",
-        "note.human_relevance",
+        "human_read_date",
+        "human_rating",
+        "human_relevance",
     }
     assert _filters(unverified) == {
         'human_read_status == "read"',
@@ -172,9 +188,9 @@ def test_human_read_has_read_and_ai_unverified_views() -> None:
     }
     assert _columns(unverified) >= {
         "formula.paper",
-        "note.ai_recommendation",
-        "note.ai_relevance",
-        "note.ai_review_date",
+        "ai_recommendation",
+        "ai_relevance",
+        "ai_review_date",
     }
 
 
@@ -207,5 +223,5 @@ def test_projects_dashboard_covers_projects_and_both_paper_directions() -> None:
         'ai_review_status == "reviewed"',
         "!note.projects",
     }
-    assert _columns(_view(dashboard, "Projects")) >= {"formula.project", "note.status"}
-    assert _columns(_view(dashboard, "Linked papers")) >= {"formula.paper", "note.projects"}
+    assert _columns(_view(dashboard, "Projects")) >= {"formula.project", "status"}
+    assert _columns(_view(dashboard, "Linked papers")) >= {"formula.paper", "projects"}
