@@ -1,0 +1,63 @@
+formulas:
+  project: file.asLink(title)
+  paper: file.asLink(title)
+properties:
+  formula.project:
+    displayName: Project
+  formula.paper:
+    displayName: Title
+filters:
+  and:
+    - 'file.ext == "md"'
+views:
+  - type: table
+    name: Projects
+    filters:
+      and:
+        - 'file.inFolder("Projects")'
+        - 'type == "project"'
+    order:
+      - formula.project
+      - note.status
+      - note.started
+      - note.target
+      - note.tags
+    sort:
+      - property: note.status
+        direction: ASC
+      - property: note.started
+        direction: DESC
+  - type: table
+    name: Linked papers
+    filters:
+      and:
+        - 'file.inFolder("Literature/Papers")'
+        - 'type == "paper"'
+        - 'note.projects'
+    order:
+      - formula.paper
+      - note.projects
+      - note.year
+      - note.human_read_status
+      - note.ai_recommendation
+      - note.ai_relevance
+    sort:
+      - property: note.human_read_status
+        direction: ASC
+  - type: table
+    name: Unlinked reviewed papers
+    filters:
+      and:
+        - 'file.inFolder("Literature/Papers")'
+        - 'type == "paper"'
+        - 'ai_review_status == "reviewed"'
+        - '!note.projects'
+    order:
+      - formula.paper
+      - note.year
+      - note.ai_recommendation
+      - note.ai_relevance
+      - note.tags
+    sort:
+      - property: note.ai_relevance
+        direction: DESC

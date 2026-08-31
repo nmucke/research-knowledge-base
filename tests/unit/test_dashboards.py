@@ -176,3 +176,36 @@ def test_human_read_has_read_and_ai_unverified_views() -> None:
         "note.ai_relevance",
         "note.ai_review_date",
     }
+
+
+PROJECTS_DASHBOARD = Path(__file__).parents[2] / "vault" / "Projects" / "dashboard.base"
+
+
+def test_projects_dashboard_covers_projects_and_both_paper_directions() -> None:
+    with PROJECTS_DASHBOARD.open(encoding="utf-8") as stream:
+        dashboard = yaml.safe_load(stream)
+
+    assert isinstance(dashboard, dict)
+    assert dashboard["formulas"] == {
+        "project": "file.asLink(title)",
+        "paper": "file.asLink(title)",
+    }
+    # The dashboard spans two folders, so each view carries its own folder filter.
+    assert _filters(dashboard) == {'file.ext == "md"'}
+    assert _filters(_view(dashboard, "Projects")) == {
+        'file.inFolder("Projects")',
+        'type == "project"',
+    }
+    assert _filters(_view(dashboard, "Linked papers")) == {
+        'file.inFolder("Literature/Papers")',
+        'type == "paper"',
+        "note.projects",
+    }
+    assert _filters(_view(dashboard, "Unlinked reviewed papers")) == {
+        'file.inFolder("Literature/Papers")',
+        'type == "paper"',
+        'ai_review_status == "reviewed"',
+        "!note.projects",
+    }
+    assert _columns(_view(dashboard, "Projects")) >= {"formula.project", "note.status"}
+    assert _columns(_view(dashboard, "Linked papers")) >= {"formula.paper", "note.projects"}

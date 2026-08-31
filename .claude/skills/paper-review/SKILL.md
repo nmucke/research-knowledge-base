@@ -1,6 +1,6 @@
 ---
 name: paper-review
-description: Review a paper in the Obsidian literature vault and manage its tags. Use when the user asks to review <citekey>, write or redo an AI review of a paper note, or present, approve, or apply the applied and suggested tags for a paper.
+description: Review a paper in the Obsidian literature vault and manage its tags and project links. Use when the user asks to review <citekey>, write or redo an AI review of a paper note, or present, approve, or apply the applied and suggested tags or projects for a paper.
 ---
 
 # Paper review
@@ -15,10 +15,11 @@ violate.
 For a request to review `<citekey>`:
 
 1. Run `uv run research review-context <citekey>`.
-2. Read all four files reported by the command: the paper note, extracted paper text, `vault/System/reading-profile.md`, and `vault/System/tag-registry.md`.
-3. Edit only AI-owned frontmatter fields and the content between `<!-- BEGIN MANAGED:AI_REVIEW -->` and `<!-- END MANAGED:AI_REVIEW -->`.
-4. Run `uv run research validate <citekey>` and correct only AI-owned content until it passes.
-5. Present the applied and suggested tags for approval as described in **Tag approval workflow**.
+2. Read every file reported by the command: the paper note, extracted paper text, `vault/System/reading-profile.md`, `vault/System/tag-registry.md`, and each active project note it lists.
+3. Judge project relevance as described in **Project relevance**.
+4. Edit only AI-owned frontmatter fields and the content between `<!-- BEGIN MANAGED:AI_REVIEW -->` and `<!-- END MANAGED:AI_REVIEW -->`.
+5. Run `uv run research validate <citekey>` and correct only AI-owned content until it passes.
+6. Present the tags and projects for approval as described in **Tag and project approval workflow**.
 
 ## Review contract
 
@@ -28,6 +29,7 @@ For a request to review `<citekey>`:
 - Record the actual agent, model when available, date, review scope, and extraction coverage in frontmatter and in the managed review block. State incomplete or poor extraction plainly.
 - Keep claims within the available evidence. An abstract-only review cannot support details from the body; use `full-text` only when the full extracted text is available. Never invent page references.
 - Keep `ai_review_human_verified: false`. AI output is never human-verified; only the user may change that field.
+- Record relevant projects in `ai_suggested_projects` only. Never write `projects`, never create or edit a project note, and never edit a `MANAGED:PROJECTS` block.
 
 ## Required managed-block format
 
@@ -63,25 +65,44 @@ Replace the managed AI-review placeholder with this structure, using truthful va
 **Suggested:** `<up to two proposed new tags>`
 ```
 
-## Tag approval workflow
-
-Approval is always the user's decision. Present tags, wait, then apply exactly what the user accepted.
-
-**Step 1 — present.** After a review, and whenever the user asks to approve tags for `<citekey>`, read the note's `ai_applied_tags` and `ai_suggested_tags` and end the reply with one continuously numbered list in this format:
+A `### Projects` section is optional; include it whenever the vault has any project note, immediately after `### Tags`:
 
 ```markdown
-**Applied** (already in the registry)
+### Projects
+
+**Relevant:** `<project ids judged relevant, or none>`
+**Considered:** `<project ids weighed and rejected, with a short reason>`
+```
+
+## Project relevance
+
+Each active project note states a description, goals, and scope. A paper is relevant to a project when it bears on a stated goal or falls inside the stated scope — not merely because their tags overlap, and never because the topic is broadly similar. Prefer fewer, defensible links.
+
+Write the relevant project identifiers to `ai_suggested_projects`, leaving `projects` untouched, and say in the `### Projects` section which projects you weighed and rejected. When no project fits, write an empty `ai_suggested_projects` and say so plainly.
+
+## Tag and project approval workflow
+
+Approval is always the user's decision. Present tags and projects, wait, then apply exactly what the user accepted.
+
+**Step 1 — present.** After a review, and whenever the user asks to approve tags or projects for `<citekey>`, read the note's `ai_applied_tags`, `ai_suggested_tags`, and `ai_suggested_projects`, and end the reply with one continuously numbered list in this format:
+
+```markdown
+**Applied tags** (already in the registry)
 
 1. `<tag>` — <at most ten words on why it fits this paper>
 
-**Suggested** (new, not in the registry)
+**Suggested tags** (new, not in the registry)
 
 2. `<tag>` — <at most ten words on why it fits this paper>
+
+**Projects** (relevant, not yet linked)
+
+3. `<project-id>` — <at most ten words on the goal or scope it bears on>
 
 Reply with the numbers to accept, or `all` / `none`.
 ```
 
-Omit a heading that has no entries; if both are empty, say there is nothing to approve. Change nothing until the user answers.
+Omit a heading that has no entries; if all three are empty, say there is nothing to approve. Change nothing until the user answers.
 
 **Step 2 — apply.** On the user's answer, make every change in one pass:
 
@@ -89,5 +110,7 @@ Omit a heading that has no entries; if both are empty, say there is nothing to a
 2. Add every accepted tag, applied and suggested alike, to `tags` in the note frontmatter, kept alphabetical and free of duplicates.
 3. Remove every suggested tag the user ruled on, accepted or rejected, from `ai_suggested_tags`; it holds open proposals only. Leave `ai_applied_tags` unchanged: it records what the review proposed, and a rejected applied tag needs no edit because a tag counts as approved only by being in `tags`.
 4. If `zotero_tag_sync` is `synced`, set it to `not-synced` and `zotero_tag_sync_date` to `null`; the newly approved tags are not in Zotero yet.
-5. Leave the managed AI-review block unchanged. It is the dated record of what the review proposed, not live tag state.
-6. Run `uv run research validate <citekey>`, then report the approved tags, any new registry entries, and that sending them to Zotero is a separate explicit request (`uv run research push-tags <citekey>`).
+5. Add every accepted project to `projects` in the note frontmatter, kept alphabetical and free of duplicates, and remove every project the user ruled on, accepted or rejected, from `ai_suggested_projects`.
+6. Leave the managed AI-review block unchanged. It is the dated record of what the review proposed, not live tag or project state.
+7. Run `uv run research projects index` when any project was accepted, so both derived blocks are rebuilt. Never edit those blocks yourself.
+8. Run `uv run research validate <citekey>`, then report the approved tags and projects, any new registry entries, and that sending tags to Zotero is a separate explicit request (`uv run research push-tags <citekey>`). Projects are never pushed to Zotero.

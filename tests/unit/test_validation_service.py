@@ -534,3 +534,108 @@ def test_extraction_cache_rejects_duplicate_fields_bad_pages_and_empty_text(
     assert {"extraction-cache-pages-invalid", "extraction-cache-empty"} <= _codes(
         malformed_body
     )
+
+
+PROJECT_NOTE = """---
+schema_version: 1
+type: project
+project_id: turbulence-priors
+title: Turbulence priors
+status: active
+started: 2026-08-31
+target:
+tags: []
+---
+
+# Turbulence priors
+
+## Related papers
+
+<!-- BEGIN MANAGED:PROJECT_PAPERS -->
+
+No papers are linked to this project.
+
+<!-- END MANAGED:PROJECT_PAPERS -->
+
+## Notes
+"""
+
+
+def _project_note(tmp_path: Path, filename: str = "turbulence-priors") -> Path:
+    directory = tmp_path / "vault" / "Projects"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{filename}.md"
+    path.write_text(PROJECT_NOTE, encoding="utf-8")
+    return path
+
+
+def test_project_reference_without_a_project_note_is_an_error(tmp_path: Path) -> None:
+    _registry(tmp_path)
+    _project_note(tmp_path)
+    store = _store(tmp_path)
+    store.create(_note(projects=("missing-project",)))
+
+    report = ValidationService(_settings(tmp_path), store).run("doeUseful2026")
+
+    assert {issue.code for issue in report.errors} == {"project-unknown"}
+
+
+def test_malformed_and_duplicated_project_identifiers_are_errors(tmp_path: Path) -> None:
+    _registry(tmp_path)
+    _project_note(tmp_path)
+    store = _store(tmp_path)
+    store.create(
+        _note(ai_suggested_projects=("Not A Slug", "turbulence-priors", "turbulence-priors"))
+    )
+
+    report = ValidationService(_settings(tmp_path), store).run("doeUseful2026")
+
+    assert {issue.code for issue in report.errors} == {"project-invalid", "project-duplicate"}
+
+
+def test_an_approved_project_must_not_remain_a_suggestion(tmp_path: Path) -> None:
+    _registry(tmp_path)
+    _project_note(tmp_path)
+    store = _store(tmp_path)
+    store.create(
+        _note(projects=("turbulence-priors",), ai_suggested_projects=("turbulence-priors",))
+    )
+
+    report = ValidationService(_settings(tmp_path), store).run("doeUseful2026")
+
+    assert {issue.code for issue in report.errors} == {"project-suggested-approved"}
+
+
+def test_a_project_note_that_does_not_validate_is_reported(tmp_path: Path) -> None:
+    _registry(tmp_path)
+    _project_note(tmp_path, filename="renamed")
+    store = _store(tmp_path)
+    store.create(_note())
+
+    report = ValidationService(_settings(tmp_path), store).run()
+
+    assert "project-note-invalid" in {issue.code for issue in report.errors}
+
+
+def test_stale_derived_project_links_are_reported_only_for_the_whole_vault(
+    tmp_path: Path,
+) -> None:
+    _registry(tmp_path)
+    _project_note(tmp_path)
+    store = _store(tmp_path)
+    store.create(_note(projects=("turbulence-priors",)))
+    service = ValidationService(_settings(tmp_path), store)
+
+    assert "project-index-stale" in {issue.code for issue in service.run().errors}
+    targeted = {issue.code for issue in service.run("doeUseful2026").errors}
+    assert "project-index-stale" not in targeted
+
+
+def test_a_vault_without_projects_reports_no_project_issues(tmp_path: Path) -> None:
+    _registry(tmp_path)
+    store = _store(tmp_path)
+    store.create(_note())
+
+    report = ValidationService(_settings(tmp_path), store).run()
+
+    assert not any(issue.code.startswith("project-") for issue in report.issues)

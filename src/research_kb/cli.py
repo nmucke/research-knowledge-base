@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, NoReturn, cast
 
 import typer
 from rich.console import Console
@@ -21,6 +21,7 @@ from research_kb.extraction_service import ExtractionResult, ExtractionService, 
 from research_kb.logging_config import LOGGER_NAME, configure_logging
 from research_kb.markdown_store import MarkdownStore
 from research_kb.models import TagPushPlan, TagPushReport
+from research_kb.project_service import ProjectService
 from research_kb.sync_service import SyncAction, SyncReport, SyncService
 from research_kb.tag_service import TagService
 from research_kb.validation_service import ValidationReport, ValidationService
@@ -32,6 +33,12 @@ app = typer.Typer(
     no_args_is_help=True,
     pretty_exceptions_show_locals=False,
 )
+projects_app = typer.Typer(
+    name="projects",
+    help="Inspect project notes and their derived paper links.",
+    no_args_is_help=True,
+)
+app.add_typer(projects_app)
 console = Console()
 CHECK_LABELS = {
     "better_bibtex": "Better BibTeX",
@@ -380,6 +387,83 @@ def push_tags(
         _print_tag_report(report)
 
 
+@projects_app.command("list")
+def projects_list(ctx: typer.Context) -> None:
+    """List every project note and how many papers are linked to it."""
+    service, logger = _project_service(ctx)
+    try:
+        projects = service.projects()
+        papers = service.papers()
+    except ResearchKBError as error:
+        _projects_error(logger, error)
+    if not projects:
+        typer.echo("No project notes exist yet.")
+        return
+    for project in projects:
+        linked = sum(1 for _path, note in papers if project.project_id in note.projects)
+        typer.echo(f"{project.project_id}  [{project.status}]  {linked} paper(s)  {project.title}")
+
+
+@projects_app.command("index")
+def projects_index(
+    ctx: typer.Context,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Report stale links without writing.")
+    ] = False,
+) -> None:
+    """Regenerate the derived project links in paper and project notes."""
+    service, logger = _project_service(ctx)
+    try:
+        report = service.index(dry_run=dry_run)
+    except ResearchKBError as error:
+        _projects_error(logger, error)
+    logger.info(
+        "projects_index dry_run=%s changed=%d unknown=%d",
+        dry_run,
+        len(report.changed),
+        len(report.unknown),
+    )
+    verb = "would update" if dry_run else "updated"
+    typer.echo(f"{verb} {len(report.changed)} note(s).")
+    for path in report.changed:
+        typer.echo(f"  {path.name}")
+    for citekey, project_id in report.unknown:
+        typer.echo(f"Warning: {citekey} references unknown project {project_id!r}.", err=True)
+
+
+@projects_app.command("candidates")
+def projects_candidates(
+    ctx: typer.Context,
+    project_id: Annotated[str, typer.Argument(help="Identifier of the project note.")],
+    limit: Annotated[int, typer.Option(help="Maximum candidates to print.")] = 20,
+) -> None:
+    """Rank unlinked papers by controlled-tag overlap with a project."""
+    service, logger = _project_service(ctx)
+    try:
+        candidates = service.candidates(project_id, limit=limit)
+    except (ResearchKBError, ValueError) as error:
+        _projects_error(logger, error)
+    for candidate in candidates:
+        shared = ", ".join(candidate.shared_tags) or "no shared tags"
+        relevance = candidate.ai_relevance if candidate.ai_relevance is not None else "-"
+        typer.echo(f"{candidate.citekey}  (relevance {relevance}; {shared})  {candidate.title}")
+
+
+def _projects_error(logger: logging.Logger, error: Exception) -> NoReturn:
+    """Report a projects failure as a readable CLI error."""
+    logger.error("projects_failed error=%s", error)
+    typer.echo(f"Error: {error}", err=True)
+    raise typer.Exit(code=1)
+
+
+def _project_service(ctx: typer.Context) -> tuple[ProjectService, logging.Logger]:
+    settings = cast(Settings, ctx.obj["settings"])
+    return (
+        ProjectService(settings, MarkdownStore(settings.papers_dir)),
+        logging.getLogger(LOGGER_NAME),
+    )
+
+
 def _push_one_with_authorization(
     settings: Settings, store: MarkdownStore, path: Path
 ) -> TagPushReport:
@@ -565,20 +649,24 @@ def _print_extraction_result(result: ExtractionResult) -> None:
 def _print_review_context(context: ReviewContext, vault_path: Path) -> None:
     """Print stable vault-relative paths when possible."""
     fields = (
-        ("Paper note", context.paper_note),
-        ("Extracted paper", context.extracted_paper),
-        ("Reading profile", context.reading_profile),
-        ("Tag registry", context.tag_registry),
+        ("Paper note", (context.paper_note,)),
+        ("Extracted paper", (context.extracted_paper,)),
+        ("Reading profile", (context.reading_profile,)),
+        ("Tag registry", (context.tag_registry,)),
+        ("Active projects", context.active_projects),
     )
-    for index, (label, path) in enumerate(fields):
+    for index, (label, paths) in enumerate(fields):
         if index:
             typer.echo()
-        try:
-            displayed = path.relative_to(vault_path)
-        except ValueError:
-            displayed = path
         typer.echo(f"{label}:")
-        typer.echo(str(displayed))
+        if not paths:
+            typer.echo("(none)")
+        for path in paths:
+            try:
+                displayed = path.relative_to(vault_path)
+            except ValueError:
+                displayed = path
+            typer.echo(str(displayed))
 
 
 def _log_validation_report(logger: logging.Logger, report: ValidationReport) -> None:

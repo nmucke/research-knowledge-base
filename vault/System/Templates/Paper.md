@@ -47,6 +47,8 @@ ai_recommendation_confidence:
 tags: []
 ai_applied_tags: []
 ai_suggested_tags: []
+projects: []
+ai_suggested_projects: []
 zotero_tag_sync: not-synced
 zotero_tag_sync_date:
 zotero_missing: false
