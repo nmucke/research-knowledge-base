@@ -117,28 +117,62 @@ tag pushes.
 
 ## The literature workflow
 
+Steps 4–6 happen inside Claude Code or Codex through the `paper-review` skill.
+The CLI commands named there are the agent's, not yours.
+
 1. Save a paper with the Zotero Connector and confirm Zotero has metadata and a
    PDF.
 2. Run `uv run research sync` to create or update the paper note.
 3. Open the note in Obsidian and optionally set `human_read_status: queued`,
    `human_priority`, and `human_relevance`.
-4. Run `uv run research review-context <citekey>` and ask Claude Code or Codex
-   to review the paper.
-5. Run `uv run research validate <citekey>` until it passes.
-6. Approve tags and projects: the agent lists its applied and suggested tags,
-   and the projects it judged the paper relevant to, as one numbered list. Reply
-   with the numbers to accept, and it promotes those into `tags` and `projects`,
-   defines each accepted tag in `vault/System/tag-registry.md`, and clears the
-   ruled-on suggestions. Nothing is approved until it appears in `tags` or
-   `projects`.
+4. Ask the agent to **review `<citekey>`**. The skill runs `review-context`,
+   reads the extracted text, your reading profile, the tag registry, and every
+   active project note, writes the AI-owned frontmatter and the managed
+   AI-review block, and runs `validate` until it passes. It never touches your
+   reading state or `## Human notes`.
+5. Approve what it proposes. The agent ends with one numbered list: applied
+   tags, suggested tags, and the projects it judged the paper relevant to.
+   Reply with the numbers you accept, or `all` / `none`.
+6. The agent promotes only what you accepted into `tags` and `projects`, defines
+   each accepted tag in `vault/System/tag-registry.md`, clears the ruled-on
+   suggestions, and runs `projects index`. Nothing is approved until it appears
+   in `tags` or `projects`.
 7. Run `uv run research push-tags <citekey> --dry-run`, then
-   `uv run research push-tags <citekey>`.
+   `uv run research push-tags <citekey>`. Tags reach Zotero only on this
+   explicit request; projects never do.
 8. Read the paper yourself, set `human_read_status: read` with `human_read_date`
    and `human_rating`, and write under `## Human notes`. The AI review stays
    unchanged next to your own assessment.
 
 `tests/integration/test_acceptance.py` drives this entire sequence, including a
 changed PDF marking the review outdated, against a fake Zotero API.
+
+## The project workflow
+
+Projects are created and populated through the `project-curation` skill. See
+[Projects](#projects) for the file layout and the derived links.
+
+1. Ask the agent to **start a project**. It runs `projects list` to avoid a
+   duplicate, then asks you once for the description, goals, and what is in and
+   out of scope. It writes nothing you did not say; an empty section is better
+   than an assumed one.
+2. Approve the `project_id` and tags it proposes. The identifier becomes the
+   filename; the tags must already exist in `vault/System/tag-registry.md`.
+3. The agent writes `vault/Projects/<project-id>.md` from the template, runs
+   `projects index` and `validate`, and reports the path.
+4. From then on every `paper-review` weighs the paper against each active
+   project and offers the relevant ones for approval, as step 5 above.
+5. To back-fill papers reviewed before the project existed, ask the agent to
+   **find papers for `<project-id>`**. It runs `projects candidates`, reads the
+   ranked notes, and proposes at most ten as one numbered list. Tag overlap
+   decides only where it looks; your stated goals and scope decide what it
+   proposes.
+6. Approve by number. The agent adds the project to each accepted paper's
+   `projects`, runs `projects index`, and validates.
+
+You own the brief. The agent never writes a project's description, goals, or
+scope with content you did not give it, never creates a project note unprompted,
+and never promotes a paper into `projects` without your approval.
 
 ## Inspect an item
 
@@ -245,8 +279,6 @@ uv run research projects candidates <id>    # rank unlinked papers by tag overla
 
 `validate` reports an out-of-date block as `project-index-stale`. The paper-note
 block appears the first time a paper is linked, so unlinked notes stay clean.
-`candidates` only suggests where to look; relevance to the project's stated goals
-and scope decides.
 
 Projects are vault-local and are never pushed to Zotero. Open
 `vault/Projects/dashboard.base` in Obsidian for three views: every project, every
