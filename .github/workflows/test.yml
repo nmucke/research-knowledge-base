@@ -9,6 +9,33 @@ permissions:
 
 jobs:
   test:
+    name: tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --all-groups --locked
+      - if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11'
+        run: uv run ruff check .
+      - if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11'
+        run: uv run mypy
+      - if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11'
+        run: uv run pytest --cov=research_kb --cov-report=term-missing
+      - if: matrix.os != 'ubuntu-latest' || matrix.python != '3.11'
+        run: uv run pytest
+
+  distribution:
+    name: distribution privacy and installed CLI
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,7 +45,15 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - run: uv sync --all-groups --locked
-      - run: uv run ruff check .
-      - run: uv run mypy
-      - run: uv run pytest --cov=research_kb --cov-report=term-missing
+      - run: uv build
+      - run: python tests/inspect_distribution.py dist/*.whl dist/*.tar.gz
+      - name: Smoke-test installed wheel outside checkout
+        run: |
+          smoke_root="$RUNNER_TEMP/research-kb-installed-smoke"
+          uv venv "$smoke_root/venv"
+          uv pip install --python "$smoke_root/venv/bin/python" dist/*.whl
+          cd "$smoke_root"
+          "$smoke_root/venv/bin/research" --help
+          "$smoke_root/venv/bin/research" workspace init "$smoke_root/workspace"
+          test -f "$smoke_root/workspace/.research-workspace.json"
+          test -f "$smoke_root/workspace/.codex/skills/paper-review/SKILL.md"

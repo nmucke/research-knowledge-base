@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 import yaml
 
-DASHBOARDS_DIR = Path(__file__).parents[2] / "vault" / "Literature" / "Dashboards"
+DASHBOARDS_DIR = Path(__file__).parents[2] / "src/research_kb/assets/vault/Literature/Dashboards"
 EXPECTED_DASHBOARDS = {
     "AI Reviewed.base",
     "Human Read.base",
@@ -75,8 +75,12 @@ def _sort(view: Mapping[str, Any]) -> list[dict[str, str]]:
 def test_dashboard_files_are_exactly_the_required_yaml_bases() -> None:
     files = {path.name for path in DASHBOARDS_DIR.glob("*.base")}
 
-    assert files == EXPECTED_DASHBOARDS
-    for filename in files:
+    assert files == EXPECTED_DASHBOARDS | {
+        "Outdated Reviews.base",
+        "Extraction Problems.base",
+        "Pending Approvals.base",
+    }
+    for filename in files - {"Pending Approvals.base"}:
         dashboard = _load_dashboard(filename)
         formulas = dashboard["formulas"]
         assert isinstance(formulas, dict)
@@ -194,7 +198,9 @@ def test_human_read_has_read_and_ai_unverified_views() -> None:
     }
 
 
-PROJECTS_DASHBOARD = Path(__file__).parents[2] / "vault" / "Projects" / "dashboard.base"
+PROJECTS_DASHBOARD = (
+    Path(__file__).parents[2] / "src/research_kb/assets/vault/Projects/dashboard.base"
+)
 
 
 def test_projects_dashboard_covers_projects_and_both_paper_directions() -> None:

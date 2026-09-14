@@ -7,6 +7,7 @@ import re
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -221,11 +222,64 @@ class MarkdownStore:
         pairs = self._marker_pairs(path, body, require_all=True)
         new_body = _splice(body, pairs[block_name], content)
         self._marker_pairs(path, new_body, require_all=True)
-        new_text = f"{text[:closing + 5]}{new_body}"
+        new_text = f"{text[: closing + 5]}{new_body}"
         if new_text == text:
             return False
         self._atomic_write(path, new_text)
         return True
+
+    def revision(self, path: Path) -> str:
+        """Return the content revision used for optimistic concurrency checks."""
+        self._validate_note_path(path)
+        return sha256(self._read(path).encode("utf-8")).hexdigest()
+
+    def render_review_update(
+        self, path: Path, updates: Mapping[str, Any], managed_review: str
+    ) -> str:
+        """Render a complete AI-only update in memory without changing the note."""
+        self._validate_note_path(path)
+        forbidden = set(updates) - _AI_FIELDS
+        if forbidden:
+            raise ValueError(
+                f"{path}: refusing unowned frontmatter update(s): {', '.join(sorted(forbidden))}"
+            )
+        text = self._read(path)
+        metadata, body, start, closing = self._split_frontmatter(path, text)
+        merged = {**metadata, **updates}
+        try:
+            current = PaperNote.model_validate(metadata)
+            updated = PaperNote.model_validate(merged)
+        except PydanticValidationError as exc:
+            raise MarkdownParseError(f"{path}: invalid paper frontmatter: {exc}") from exc
+        # Comparing every non-AI field makes this remain safe when PaperNote grows.
+        current_data = current.model_dump(mode="json")
+        updated_data = updated.model_dump(mode="json")
+        protected = set(current_data) - _AI_FIELDS
+        if any(current_data[key] != updated_data[key] for key in protected):
+            raise ValueError(f"{path}: review update changed protected frontmatter")
+        pairs = self._marker_pairs(path, body, require_all=True)
+        new_body = _splice(body, pairs["AI_REVIEW"], managed_review)
+        self._marker_pairs(path, new_body, require_all=True)
+        effective = {key: updated_data[key] for key in updates}
+        frontmatter = self._patch_frontmatter(metadata, effective, text[start:closing])
+        candidate = f"{text[:start]}{frontmatter}{text[closing : closing + 5]}{new_body}"
+        # Parse the fully composed result before it can reach disk.
+        candidate_metadata, candidate_body, *_ = self._split_frontmatter(path, candidate)
+        PaperNote.model_validate(candidate_metadata)
+        self._marker_pairs(path, candidate_body, require_all=True)
+        return candidate
+
+    def commit_if_revision(self, path: Path, content: str, expected_revision: str) -> str:
+        """Atomically replace a note only if it still has the expected contents."""
+        self._validate_note_path(path)
+        current = self._read(path)
+        actual = sha256(current.encode("utf-8")).hexdigest()
+        if actual != expected_revision:
+            raise MarkdownParseError(
+                f"{path}: revision conflict (expected {expected_revision}, found {actual})"
+            )
+        self._atomic_write(path, content)
+        return sha256(content.encode("utf-8")).hexdigest()
 
     def rename(self, path: Path, new_citekey: str) -> Path:
         self._validate_note_path(path)
@@ -357,7 +411,7 @@ class MarkdownStore:
                 following = next_field.search(result, field.end())
                 end = following.start() if following else len(result)
                 separator = "\n" if following else ""
-                result = f"{result[:field.start()]}{rendered}{separator}{result[end:]}"
+                result = f"{result[: field.start()]}{rendered}{separator}{result[end:]}"
             else:
                 result = f"{result}\n{rendered}" if result else rendered
         return result
@@ -409,7 +463,7 @@ def _splice(text: str, pair: tuple[re.Match[str], re.Match[str]], content: str) 
     begin, end = pair
     replacement = content.strip("\n")
     inner = f"\n\n{replacement}\n\n" if replacement else "\n\n"
-    return f"{text[:begin.end()]}{inner}{text[end.start():]}"
+    return f"{text[: begin.end()]}{inner}{text[end.start() :]}"
 
 
 def replace_block(path: Path, block_name: str, content: str, *, dry_run: bool = False) -> bool:

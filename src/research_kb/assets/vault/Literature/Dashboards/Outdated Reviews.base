@@ -1,0 +1,21 @@
+filters:
+  and:
+    - file.inFolder("Literature/Papers")
+    - file.ext == "md"
+    - type == "paper"
+formulas:
+  paper: file.asLink(title)
+properties:
+  formula.paper:
+    displayName: Title
+views:
+  - type: table
+    name: Reviews needing attention
+    filters:
+      or:
+        - ai_review_status == "outdated"
+        - ai_review_status == "failed"
+    order:
+      - formula.paper
+      - ai_review_status
+      - ai_review_date

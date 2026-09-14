@@ -1,0 +1,22 @@
+filters:
+  and:
+    - file.inFolder("Literature/Papers")
+    - file.ext == "md"
+    - type == "paper"
+formulas:
+  paper: file.asLink(title)
+properties:
+  formula.paper:
+    displayName: Title
+views:
+  - type: table
+    name: Extraction Problems
+    filters:
+      or:
+        - ai_review_scope == "partial-text"
+        - ai_review_scope == "abstract-only"
+        - ai_review_status == "failed"
+    order:
+      - formula.paper
+      - ai_review_coverage
+      - ai_review_status

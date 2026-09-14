@@ -2,12 +2,14 @@
 
 import logging
 from pathlib import Path
-from typing import Annotated, NoReturn, cast
+from typing import Annotated, Any, NoReturn, cast
 
 import typer
 from rich.console import Console
+from typer.core import TyperGroup
 
 from research_kb import __version__
+from research_kb.api_cli import api_app, catalog_app, curation_app, emit, fail
 from research_kb.better_bibtex import BetterBibTeXClient
 from research_kb.config import ZOTERO_WEB_API_URL, Settings
 from research_kb.credential_store import CredentialStore
@@ -22,12 +24,23 @@ from research_kb.logging_config import LOGGER_NAME, configure_logging
 from research_kb.markdown_store import MarkdownStore
 from research_kb.models import TagPushPlan, TagPushReport
 from research_kb.project_service import ProjectService
+from research_kb.search_service import SearchRequest, SearchService
 from research_kb.sync_service import SyncAction, SyncReport, SyncService
 from research_kb.tag_service import TagService
 from research_kb.validation_service import ValidationReport, ValidationService
+from research_kb.workspace_cli import workspace_app
 from research_kb.zotero_client import ZoteroClient
 
+
+class ResearchGroup(TyperGroup):
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
+        options = args[: args.index("--")] if "--" in args else args
+        ctx.meta["help_requested"] = any(item in ctx.help_option_names for item in options)
+        return super().parse_args(ctx, args)
+
+
 app = typer.Typer(
+    cls=ResearchGroup,
     name="research",
     help="Manage the local Zotero-Obsidian literature workflow.",
     no_args_is_help=True,
@@ -39,6 +52,10 @@ projects_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(projects_app)
+app.add_typer(workspace_app, name="workspace")
+app.add_typer(api_app, name="api")
+app.add_typer(curation_app, name="curation")
+app.add_typer(catalog_app, name="catalog")
 console = Console()
 CHECK_LABELS = {
     "better_bibtex": "Better BibTeX",
@@ -58,6 +75,10 @@ def _version_callback(value: bool) -> None:
 @app.callback()
 def main(
     ctx: typer.Context,
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Private workspace root, independent of checkout."),
+    ] = None,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Show detailed console diagnostics."),
@@ -74,12 +95,70 @@ def main(
 ) -> None:
     """Initialize settings and command logging."""
     del version
-    settings = Settings()
-    logger = configure_logging(settings, verbose=verbose)
+    if ctx.meta.get("help_requested"):
+        return
+    try:
+        settings = Settings.for_workspace(workspace) if workspace is not None else Settings()
+    except ValueError as error:
+        fail(error)
+    if (
+        ctx.invoked_subcommand != "workspace"
+        and (settings.workspace_path / "src/research_kb").is_dir()
+        and not settings.obsidian_vault_path.exists()
+    ):
+        fail(
+            ValueError("Select a private workspace with --workspace PATH; this is a code checkout.")
+        )
+    try:
+        logger = configure_logging(
+            settings, verbose=verbose, persist=ctx.invoked_subcommand != "workspace"
+        )
+    except OSError as error:
+        fail(error)
     logger.info("command_start command=%s", ctx.invoked_subcommand or "research")
     ctx.ensure_object(dict)
     ctx.obj["settings"] = settings
     ctx.obj["verbose"] = verbose
+
+
+@app.command("mcp")
+def mcp(ctx: typer.Context) -> None:
+    """Serve bounded research tools over stdio using the official MCP SDK."""
+    from research_kb.mcp_server import run_stdio
+
+    run_stdio(cast(Settings, ctx.obj["settings"]))
+
+
+@app.command("search")
+def search(
+    ctx: typer.Context,
+    query: str = "",
+    tag: Annotated[list[str] | None, typer.Option("--tag")] = None,
+    project: str | None = None,
+    author: str | None = None,
+    year_from: int | None = None,
+    year_to: int | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> None:
+    """Search titles, abstracts, tags and AI reviews; print ranked JSON results."""
+    try:
+        emit(
+            SearchService(cast(Settings, ctx.obj["settings"])).search(
+                SearchRequest(
+                    query=query,
+                    tags=tuple(tag or []),
+                    project=project,
+                    author=author,
+                    year_from=year_from,
+                    year_to=year_to,
+                    limit=limit,
+                    offset=offset,
+                )
+            )
+        )
+    except (ResearchKBError, ValueError, OSError) as error:
+        fail(error)
 
 
 @app.command()
@@ -236,6 +315,10 @@ def extract(
 def review_context(
     ctx: typer.Context,
     citekey: Annotated[str, typer.Argument(help="Citation key of the paper to review.")],
+    abstract_only: Annotated[
+        bool,
+        typer.Option("--abstract-only", help="Prepare abstract evidence without PDF extraction."),
+    ] = False,
 ) -> None:
     """Ensure text is extracted and print the four files needed for review."""
     settings = cast(Settings, ctx.obj["settings"])
@@ -247,7 +330,7 @@ def review_context(
                 settings,
                 zotero_client,
                 markdown_store,
-            ).review_context(citekey)
+            ).review_context(citekey, scope="abstract-only" if abstract_only else "full-text")
         snapshot = ValidationService(settings, markdown_store).capture_workflow_snapshot(citekey)
     except ResearchKBError as error:
         logger.error("review_context_failed citekey=%s error=%s", citekey, error)
@@ -329,9 +412,9 @@ def tags(
         store = MarkdownStore(settings.papers_dir)
         with ZoteroClient(settings.zotero_local_api) as zotero_client:
             server = zotero_client.discover()
-            plan = TagService(
-                settings, store, zotero_client, server_id=server.server_id
-            ).plan(store.note_path(citekey))
+            plan = TagService(settings, store, zotero_client, server_id=server.server_id).plan(
+                store.note_path(citekey)
+            )
     except (ResearchKBError, ValueError) as error:
         logger.error("tags_failed citekey=%s error=%s", citekey, error)
         typer.echo(f"Error: {error}", err=True)
@@ -371,9 +454,7 @@ def push_tags(
         if dry_run:
             with ZoteroClient(settings.zotero_local_api) as zotero_client:
                 server = zotero_client.discover()
-                service = TagService(
-                    settings, store, zotero_client, server_id=server.server_id
-                )
+                service = TagService(settings, store, zotero_client, server_id=server.server_id)
                 reports = tuple(service.push(path, dry_run=True) for path in paths)
         else:
             reports = (_push_one_with_authorization(settings, store, paths[0]),)
@@ -442,17 +523,23 @@ def projects_candidates(
     ctx: typer.Context,
     project_id: Annotated[str, typer.Argument(help="Identifier of the project note.")],
     limit: Annotated[int, typer.Option(help="Maximum candidates to print.")] = 20,
+    offset: Annotated[int, typer.Option(help="Skip this many ranked candidates.")] = 0,
+    query: Annotated[
+        str | None, typer.Option(help="Override terms inferred from project brief.")
+    ] = None,
 ) -> None:
     """Rank unlinked papers by controlled-tag overlap with a project."""
     service, logger = _project_service(ctx)
     try:
-        candidates = service.candidates(project_id, limit=limit)
+        candidates = service.candidates(project_id, limit=limit, offset=offset, query=query)
     except (ResearchKBError, ValueError) as error:
         _projects_error(logger, error)
     for candidate in candidates:
         shared = ", ".join(candidate.shared_tags) or "no shared tags"
         relevance = candidate.ai_relevance if candidate.ai_relevance is not None else "-"
         typer.echo(f"{candidate.citekey}  (relevance {relevance}; {shared})  {candidate.title}")
+        if candidate.matched_terms:
+            typer.echo(f"  Title/abstract terms: {', '.join(candidate.matched_terms)}")
 
 
 def _projects_error(logger: logging.Logger, error: Exception) -> NoReturn:
@@ -493,9 +580,7 @@ def _push_one_with_authorization(
             return _push_one_with_web_api(settings, store, path)
         except ZoteroAuthorizationError:
             try:
-                server_id, replacement_key = zotero_client.authorize(
-                    _AUTHORIZATION_APP_NAME
-                )
+                server_id, replacement_key = zotero_client.authorize(_AUTHORIZATION_APP_NAME)
             except ZoteroLocalWriteUnsupportedError:
                 return _push_one_with_web_api(settings, store, path)
             if server_id != server.server_id:
@@ -503,14 +588,12 @@ def _push_one_with_authorization(
                     "The Zotero server changed during authorization; no tags were written."
                 ) from None
             credentials.save(server_id, replacement_key)
-            return TagService(
-                settings, store, zotero_client, server_id=server_id
-            ).push(path, api_key=replacement_key)
+            return TagService(settings, store, zotero_client, server_id=server_id).push(
+                path, api_key=replacement_key
+            )
 
 
-def _push_one_with_web_api(
-    settings: Settings, store: MarkdownStore, path: Path
-) -> TagPushReport:
+def _push_one_with_web_api(settings: Settings, store: MarkdownStore, path: Path) -> TagPushReport:
     """Use the explicit Web API fallback when local writes are unavailable."""
     web_settings, api_key = _web_write_settings(settings)
     with ZoteroClient(ZOTERO_WEB_API_URL, api_key=api_key) as web_client:
@@ -582,8 +665,7 @@ def _print_tag_report(report: TagPushReport) -> None:
         typer.echo(f"DRY-RUN: {outcome}")
     elif report.pushed:
         typer.echo(
-            f"PUSH: added {_format_tags(report.plan.pending_tags)} "
-            f"(attempts={report.attempts})"
+            f"PUSH: added {_format_tags(report.plan.pending_tags)} (attempts={report.attempts})"
         )
     else:
         typer.echo("PUSH: already synchronized (no Zotero write required)")
@@ -640,8 +722,7 @@ def _print_extraction_result(result: ExtractionResult) -> None:
     typer.echo(f"Status: {result.status}")
     typer.echo(f"Pages: {diagnostics.pages}")
     per_page = ", ".join(
-        f"{page}:{characters}"
-        for page, characters in enumerate(diagnostics.characters_per_page, 1)
+        f"{page}:{characters}" for page, characters in enumerate(diagnostics.characters_per_page, 1)
     )
     typer.echo(f"Characters per page: {per_page or 'none'}")
     empty = ", ".join(str(page) for page in diagnostics.empty_pages)
@@ -664,7 +745,9 @@ def _print_review_context(context: ReviewContext, vault_path: Path) -> None:
         if index:
             typer.echo()
         typer.echo(f"{label}:")
-        typer.echo(str(_vault_relative(path, vault_path)))
+        typer.echo(
+            str(_vault_relative(path, vault_path)) if path is not None else "(abstract-only)"
+        )
     typer.echo()
     typer.echo("Active projects:")
     if not context.active_projects:
@@ -728,8 +811,7 @@ def _log_sync_report(logger: logging.Logger, report: SyncReport) -> None:
             item.path,
         )
     logger.info(
-        "sync_complete mode=%s dry_run=%s previous_version=%s library_version=%s "
-        "state_updated=%s",
+        "sync_complete mode=%s dry_run=%s previous_version=%s library_version=%s state_updated=%s",
         report.mode,
         report.dry_run,
         report.previous_version,

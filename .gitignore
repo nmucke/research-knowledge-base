@@ -11,19 +11,14 @@ htmlcov/
 dist/
 build/
 
-# Local configuration and credentials
+# Private workspace configuration and durable state
 .env
-.research/credentials.json
+.research/
+references.bib
+/.research-workspace.json
 
-# Rebuildable research state
-.research/paper-text/*
-!.research/paper-text/.gitkeep
-.research/review-snapshots/*
-.research/backups/*
-!.research/backups/.gitkeep
-.research/logs/*
-!.research/logs/.gitkeep
-.research/sync-state.json
+# Rebuildable research caches
+.cache/research-kb/
 
 # Editors and operating systems
 .DS_Store
@@ -33,12 +28,10 @@ build/
 # PDF inspection scratch output
 tmp/
 
-# Paper notes
-vault/Literature/Papers/*
-!vault/Literature/Papers/.gitkeep
+# All private vault content; distributable starter assets live under src/.
+/vault/
 
-# Obsidian per-machine interface state
-vault/.obsidian/*
-
-# Vault files
-vault/Literature/Papers/*
+# Local assessment reports can contain private research and workspace details.
+REPOSITORY_ASSESSMENT.md
+SKILL_RECOMMENDATIONS.md
+IMPLEMENTATION.md

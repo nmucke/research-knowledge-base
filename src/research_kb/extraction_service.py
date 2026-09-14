@@ -127,10 +127,12 @@ class ReviewContext:
     """The complete, explicit set of local files an agent should inspect."""
 
     paper_note: Path
-    extracted_paper: Path
+    extracted_paper: Path | None
     reading_profile: Path
     tag_registry: Path
     active_projects: tuple[Path, ...] = ()
+    scope: Literal["abstract-only", "partial-text", "full-text"] = "full-text"
+    abstract: str | None = None
 
 
 class ExtractionService:
@@ -237,13 +239,33 @@ class ExtractionService:
             diagnostics,
         )
 
-    def review_context(self, citekey: str) -> ReviewContext:
-        """Ensure extraction is current, then return the four review inputs."""
-        extracted = self.extract(citekey)
-        note_path = self.markdown_store.note_path(citekey)
+    def review_context(
+        self,
+        citekey: str,
+        *,
+        scope: Literal["auto", "abstract-only", "full-text"] = "full-text",
+    ) -> ReviewContext:
+        """Return explicit review inputs, with an intentional abstract-only path."""
+        document, note_path = self._paper_document(citekey)
+        extracted: ExtractionResult | None = None
+        if scope != "abstract-only":
+            try:
+                extracted = self.extract(citekey)
+            except (PDFNotFoundError, PDFExtractionError):
+                if scope == "full-text" or not document.note.abstract:
+                    raise
+        actual_scope: Literal["abstract-only", "partial-text", "full-text"]
+        if extracted is None:
+            if not document.note.abstract:
+                raise PDFNotFoundError(
+                    f"Paper {citekey!r} has neither usable extracted text nor an abstract."
+                )
+            actual_scope = "abstract-only"
+        else:
+            actual_scope = "full-text" if extracted.status == "complete" else "partial-text"
         return ReviewContext(
             paper_note=note_path,
-            extracted_paper=extracted.output_path,
+            extracted_paper=extracted.output_path if extracted else None,
             reading_profile=self.settings.reading_profile_path,
             tag_registry=self.settings.tag_registry_path,
             active_projects=tuple(
@@ -251,6 +273,8 @@ class ExtractionService:
                 for project in load_projects(self.settings.projects_dir)
                 if project.status == "active"
             ),
+            scope=actual_scope,
+            abstract=document.note.abstract if actual_scope == "abstract-only" else None,
         )
 
     def cache_path(self, citekey: str) -> Path:
@@ -339,9 +363,7 @@ class ExtractionService:
         markers = list(_PAGE_MARKER.finditer(body))
         if len(markers) != expected_pages:
             return None
-        if tuple(int(marker.group(1)) for marker in markers) != tuple(
-            range(1, expected_pages + 1)
-        ):
+        if tuple(int(marker.group(1)) for marker in markers) != tuple(range(1, expected_pages + 1)):
             return None
         texts: list[str] = []
         for index, marker in enumerate(markers):

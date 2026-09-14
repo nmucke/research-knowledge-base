@@ -126,12 +126,17 @@ def validate_managed_review(note: PaperNote, review_text: str) -> tuple[Contract
             )
         )
     tags = _section(review_text, "Tags")
-    for label in ("Applied", "Suggested"):
-        if re.search(rf"(?m)^\*\*{label}:\*\*[ \t]*.*$", tags) is None:
+    tag_labels = (
+        ("Suggested existing tags", "Applied"),
+        ("Suggested new tags", "Suggested"),
+    )
+    for preferred, legacy in tag_labels:
+        alternatives = "|".join(re.escape(label) for label in (preferred, legacy))
+        if re.search(rf"(?m)^\*\*(?:{alternatives}):\*\*[ \t]*.*$", tags) is None:
             violations.append(
                 ContractViolation(
                     "review-structure-invalid",
-                    f"Managed review Tags section is missing {label!r}.",
+                    f"Managed review Tags section is missing {preferred!r}.",
                 )
             )
     if re.search(r"(?m)^### Projects[ \t]*$", review_text) is not None:

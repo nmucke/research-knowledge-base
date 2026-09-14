@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -35,9 +37,7 @@ from research_kb.tag_registry import parse_tag_registry
 _REQUIRED_IDENTITY = ("type", "schema_version", "zotero_key", "citekey", "title")
 _MARKER = re.compile(r"<!-- (BEGIN|END) MANAGED:(AI_REVIEW|ZOTERO_ANNOTATIONS) -->")
 _REQUIRED_BLOCKS = frozenset(("AI_REVIEW", "ZOTERO_ANNOTATIONS"))
-_TAG = re.compile(
-    rf"(?P<namespace>{'|'.join(TAG_NAMESPACES)})/[a-z0-9]+(?:-[a-z0-9]+)*\Z"
-)
+_TAG = re.compile(rf"(?P<namespace>{'|'.join(TAG_NAMESPACES)})/[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 _REVIEW_FIELDS = (
     "ai_review_scope",
     "ai_review_coverage",
@@ -158,6 +158,35 @@ class ValidationService:
         )
         return ValidationReport(checked_count=len(paths), issues=ordered)
 
+    def validate_candidate(self, citekey: str, content: str) -> ValidationReport:
+        """Run the complete targeted contract against an in-memory proposed note."""
+        self.markdown_store.note_path(citekey)  # validates the external identifier
+        self.markdown_store.papers_dir.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(
+            dir=self.markdown_store.papers_dir,
+            prefix=".review-candidate-",
+            suffix=".md",
+            text=True,
+        )
+        candidate = Path(name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+                handle.write(content)
+            try:
+                registry_tags = self._registry_tags()
+            except ValidationError as error:
+                return ValidationReport(
+                    checked_count=1,
+                    issues=(self._issue(candidate, "tag-registry-invalid", str(error)),),
+                )
+            project_ids, project_issues = self._project_notes()
+            issues = list(project_issues)
+            issues.extend(self._validate_path(candidate, registry_tags, project_ids))
+            issues = [issue for issue in issues if issue.code != "citekey-filename-mismatch"]
+            return ValidationReport(checked_count=1, issues=tuple(issues))
+        finally:
+            candidate.unlink(missing_ok=True)
+
     def capture_workflow_snapshot(self, citekey: str) -> Path:
         """Capture protected content immediately before an agent edits a note."""
         return self.snapshot_store.capture(citekey)
@@ -231,8 +260,10 @@ class ValidationService:
 
         for field in _REQUIRED_IDENTITY:
             value = raw.metadata.get(field)
-            if field not in raw.metadata or value is None or (
-                isinstance(value, str) and not value.strip()
+            if (
+                field not in raw.metadata
+                or value is None
+                or (isinstance(value, str) and not value.strip())
             ):
                 issues.append(
                     self._issue(
@@ -311,6 +342,17 @@ class ValidationService:
                         path,
                         "human-notes-changed",
                         "Protected Human notes content changed during the agent workflow.",
+                    )
+                )
+            if (
+                baseline.protected_frontmatter_sha256 is not None
+                and current.protected_frontmatter_sha256 != baseline.protected_frontmatter_sha256
+            ):
+                issues.append(
+                    self._issue(
+                        path,
+                        "protected-frontmatter-changed",
+                        "Non-AI frontmatter changed during the agent review workflow.",
                     )
                 )
         return issues
@@ -574,7 +616,7 @@ class ValidationService:
     ) -> list[ValidationIssue]:
         if note.ai_review_scope != "full-text" or not has_review:
             return []
-        cache_path = self.settings.paper_text_dir / path.name
+        cache_path = self.settings.paper_text_dir / f"{note.citekey}.md"
         if not self._safe_root(self.settings.paper_text_dir):
             return [
                 self._issue(

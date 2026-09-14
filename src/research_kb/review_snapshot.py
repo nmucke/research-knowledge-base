@@ -15,9 +15,7 @@ from research_kb.exceptions import ValidationError
 from research_kb.markdown_store import MarkdownStore
 from research_kb.models import ReviewSnapshot
 
-_HUMAN_NOTES = re.compile(
-    r"(?ms)^## Human notes[ \t]*\n(?P<content>.*?)(?=^## AI review[ \t]*$)"
-)
+_HUMAN_NOTES = re.compile(r"(?ms)^## Human notes[ \t]*\n(?P<content>.*?)(?=^## AI review[ \t]*$)")
 
 
 class ReviewSnapshotStore:
@@ -28,12 +26,18 @@ class ReviewSnapshotStore:
         self.markdown_store = markdown_store
 
     def capture(self, citekey: str) -> Path:
-        """Atomically replace the baseline at the start of a review workflow."""
+        """Create an immutable baseline at the start of a review workflow."""
         path = self.markdown_store.note_path(citekey)
         document = self.markdown_store.parse(path)
         snapshot = ReviewSnapshot.capture(document.note, self.human_notes(document.body))
         target = self.path(citekey)
         self._require_safe_root()
+        if target.exists():
+            self._require_safe_file(target)
+            raise ValidationError(
+                f"{target}: an active review snapshot already exists; consume it before "
+                "starting another workflow"
+            )
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
         except OSError as error:

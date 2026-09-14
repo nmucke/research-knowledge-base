@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "research-kb"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first Zotero and Obsidian literature management tooling"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,6 +21,7 @@ dependencies = [
   "PyMuPDF>=1.26",
   "typer>=0.16",
   "rich>=14.0",
+  "mcp>=1.28,<2",
 ]
 
 [project.scripts]
@@ -37,6 +38,13 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/research_kb"]
+artifacts = ["src/research_kb/assets/**"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["**/REPOSITORY_ASSESSMENT.md", "**/SKILL_RECOMMENDATIONS.md", "**/IMPLEMENTATION.md"]
+include = ["src/**", "tests/**", ".agents/**", ".github/**", "docs/**",
+           "AGENTS.md", "CLAUDE.md", "README.md", "LICENSE", "pyproject.toml",
+           "uv.lock", ".gitignore", ".env.example"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"

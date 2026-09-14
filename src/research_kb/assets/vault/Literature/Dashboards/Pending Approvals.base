@@ -1,0 +1,22 @@
+filters:
+  and:
+    - file.inFolder("System/Proposals")
+    - file.ext == "md"
+    - type == "curation-proposal" || type == "catalog-proposal"
+formulas:
+  proposal: file.asLink(proposal_id)
+properties:
+  formula.proposal:
+    displayName: Proposal
+views:
+  - type: table
+    name: Pending Approvals
+    filters:
+      and:
+        - status == "pending"
+    order:
+      - formula.proposal
+      - citekey
+      - operation
+      - pending_count
+      - status

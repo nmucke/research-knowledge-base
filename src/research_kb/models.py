@@ -8,6 +8,7 @@ from typing import Literal, Self
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     StrictBool,
     StrictFloat,
     StrictInt,
@@ -507,10 +508,30 @@ class ReviewSnapshot(DomainModel):
     human_priority: int | None
     human_relevance: int | None
     human_notes_sha256: str
+    protected_frontmatter_sha256: str | None = None
 
     @classmethod
     def capture(cls, note: PaperNote, human_notes: str) -> "ReviewSnapshot":
         """Capture fields and a non-reversible hash of the exact Human notes section."""
+        ai_owned = {
+            "ai_review_status",
+            "ai_review_scope",
+            "ai_review_coverage",
+            "ai_review_agent",
+            "ai_review_model",
+            "ai_review_date",
+            "ai_review_version",
+            "ai_recommendation",
+            "ai_recommendation_reason",
+            "ai_relevance",
+            "ai_recommendation_confidence",
+            "ai_applied_tags",
+            "ai_suggested_tags",
+            "ai_suggested_projects",
+        }
+        protected = {
+            key: value for key, value in note.model_dump(mode="json").items() if key not in ai_owned
+        }
         return cls(
             zotero_key=note.zotero_key,
             citekey=note.citekey,
@@ -520,4 +541,147 @@ class ReviewSnapshot(DomainModel):
             human_priority=note.human_priority,
             human_relevance=note.human_relevance,
             human_notes_sha256=sha256(human_notes.encode("utf-8")).hexdigest(),
+            protected_frontmatter_sha256=sha256(
+                repr(sorted(protected.items())).encode("utf-8")
+            ).hexdigest(),
         )
+
+
+class ReviewProvenance(DomainModel):
+    """Fingerprints of every input used to produce a review."""
+
+    note_sha256: str
+    source_sha256: str
+    reading_profile_sha256: str
+    projects_sha256: str
+    tag_registry_sha256: str
+
+
+class ReviewSession(DomainModel):
+    """Immutable, durable authorization boundary for one review attempt."""
+
+    session_id: str
+    citekey: str
+    expected_revision: str
+    context_scope: Literal["abstract-only", "partial-text", "full-text"]
+    provenance: ReviewProvenance
+    created_at: datetime
+
+
+class ReviewSubmission(DomainModel):
+    """The complete AI-owned mutation accepted by the review writer."""
+
+    session_id: str
+    citekey: str
+    expected_revision: str
+    review_scope: Literal["metadata-only", "abstract-only", "partial-text", "full-text"]
+    review_coverage: Literal["complete", "partial", "unknown"]
+    agent: str
+    model: str | None = None
+    review_date: date
+    recommendation: Literal["must-read", "read", "skim", "skip", "uncertain"]
+    recommendation_reason: str
+    relevance: int | None = None
+    recommendation_confidence: Literal["low", "medium", "high"]
+    applied_tags: tuple[str, ...] = ()
+    suggested_tags: tuple[str, ...] = ()
+    suggested_tag_definitions: dict[str, str] = Field(default_factory=dict)
+    suggested_projects: tuple[str, ...] = ()
+    suggested_project_rationales: dict[str, str] = Field(default_factory=dict)
+    managed_review: str
+
+    @field_validator("agent", "recommendation_reason", "managed_review")
+    @classmethod
+    def review_text_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def suggested_tag_definitions_must_be_complete(self) -> Self:
+        if set(self.suggested_tag_definitions) != set(self.suggested_tags):
+            raise ValueError("suggested_tag_definitions must define every suggested tag exactly")
+        if any(not definition.strip() for definition in self.suggested_tag_definitions.values()):
+            raise ValueError("suggested tag definitions must not be blank")
+        if set(self.suggested_project_rationales) != set(self.suggested_projects):
+            raise ValueError(
+                "suggested_project_rationales must explain every suggested project exactly"
+            )
+        if any(not rationale.strip() for rationale in self.suggested_project_rationales.values()):
+            raise ValueError("suggested project rationales must not be blank")
+        return self
+
+
+class ReviewReceipt(DomainModel):
+    citekey: str
+    previous_revision: str
+    revision: str
+    review_version: int
+    proposal_id: str | None = None
+
+
+class ReviewProvenanceStatus(DomainModel):
+    """Current freshness of the latest durably recorded review inputs."""
+
+    citekey: str
+    review_version: int
+    review_revision: str
+    provenance: ReviewProvenance
+    current: ReviewProvenance
+    source_check: Literal["abstract", "local-cache"]
+    source_limitation: str
+    stale: StrictBool
+    stale_reasons: tuple[
+        Literal[
+            "note-changed",
+            "source-changed",
+            "reading-profile-changed",
+            "projects-changed",
+            "tag-registry-changed",
+        ],
+        ...,
+    ] = ()
+
+
+class CurationItem(DomainModel):
+    item_id: str
+    kind: Literal["existing-tag", "new-tag", "project-link"]
+    value: str
+    rationale: str
+    definition: str | None = None
+
+
+class CurationProposalRequest(DomainModel):
+    citekey: str
+    expected_revision: str
+    items: tuple[CurationItem, ...]
+
+
+class CurationDecision(DomainModel):
+    item_id: str
+    decision: Literal["accepted", "rejected"]
+
+
+class ApprovedCurationRequest(DomainModel):
+    proposal_id: str
+    decisions: tuple[CurationDecision, ...]
+    expected_revision: str
+
+
+class CurationProposal(DomainModel):
+    proposal_id: str
+    citekey: str
+    expected_revision: str
+    status: Literal["pending", "decided", "applied", "superseded"] = "pending"
+    items: tuple[CurationItem, ...]
+    decisions: tuple[CurationDecision, ...] = ()
+    created_at: datetime
+
+
+class OperationReceipt(DomainModel):
+    operation_id: str
+    kind: str
+    affected_paths: tuple[str, ...]
+    previous_revisions: dict[str, str]
+    revisions: dict[str, str]
+    created_at: datetime

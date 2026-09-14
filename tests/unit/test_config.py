@@ -17,6 +17,23 @@ def test_vault_paths_are_resolved_from_root(tmp_path: Path) -> None:
     assert settings.tag_registry_path == tmp_path / "vault" / "System" / "tag-registry.md"
     assert settings.log_dir == tmp_path / ".research" / "logs"
     assert settings.credentials_path == tmp_path / ".research" / "credentials.json"
+    assert settings.paper_text_dir == tmp_path / ".research/paper-text"
+
+
+def test_obsidian_directory_must_remain_inside_workspace(tmp_path: Path) -> None:
+    inside = Settings(
+        _env_file=None,
+        research_vault_path=tmp_path,
+        research_obsidian_dir=tmp_path / "notes",
+    )
+    assert inside.obsidian_vault_path == tmp_path / "notes"
+
+    with pytest.raises(ValidationError, match="within the selected workspace"):
+        Settings(
+            _env_file=None,
+            research_vault_path=tmp_path,
+            research_obsidian_dir=tmp_path.parent / "other",
+        )
 
 
 def test_log_level_is_case_insensitive(tmp_path: Path) -> None:

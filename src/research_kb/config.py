@@ -101,12 +101,21 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def web_write_credentials_must_be_complete(self) -> "Settings":
-        """Require the Web API key and library ID as an inseparable fallback pair."""
+        """Validate coupled credentials and keep the Obsidian vault workspace-bounded."""
         configured = (self.zotero_web_api_key is not None, self.zotero_web_library_id is not None)
         if configured[0] != configured[1]:
             raise ValueError(
                 "ZOTERO_WEB_API_KEY and ZOTERO_WEB_LIBRARY_ID must be configured together"
             )
+        root = Path(self.research_vault_path).resolve()
+        configured_obsidian = Path(self.research_obsidian_dir)
+        obsidian = (
+            configured_obsidian.resolve()
+            if configured_obsidian.is_absolute()
+            else (root / configured_obsidian).resolve()
+        )
+        if not obsidian.is_relative_to(root):
+            raise ValueError("RESEARCH_OBSIDIAN_DIR must resolve within the selected workspace")
         return self
 
     @property
@@ -116,8 +125,21 @@ class Settings(BaseSettings):
 
     @property
     def vault_path(self) -> Path:
-        """Project root holding generated state, tooling, and the Obsidian vault."""
+        """Selected private workspace root (legacy name retained for compatibility)."""
         return Path(self.research_vault_path).resolve()
+
+    @classmethod
+    def for_workspace(cls, workspace: Path | str) -> "Settings":
+        """Load settings for an explicit workspace, isolated from the checkout's .env."""
+        root = Path(workspace).expanduser().resolve()
+        return cls(  # type: ignore[call-arg]
+            _env_file=root / ".env", research_vault_path=root
+        )
+
+    @property
+    def workspace_path(self) -> Path:
+        """Selected private workspace root."""
+        return self.vault_path
 
     @property
     def obsidian_vault_path(self) -> Path:
@@ -147,7 +169,21 @@ class Settings(BaseSettings):
 
     @property
     def research_dir(self) -> Path:
+        """Durable private application state (legacy property name)."""
         return self.vault_path / ".research"
+
+    @property
+    def state_dir(self) -> Path:
+        return self.research_dir
+
+    @property
+    def cache_dir(self) -> Path:
+        """Rebuildable caches, kept separate from credentials and recovery state."""
+        return self.vault_path / ".cache" / "research-kb"
+
+    @property
+    def recovery_dir(self) -> Path:
+        return self.state_dir / "recovery"
 
     @property
     def credentials_path(self) -> Path:
@@ -161,7 +197,10 @@ class Settings(BaseSettings):
     @property
     def paper_text_dir(self) -> Path:
         """Directory containing page-aware, regenerable PDF text caches."""
-        return self.research_dir / "paper-text"
+        cache = self.cache_dir / "paper-text"
+        legacy = self.research_dir / "paper-text"
+        manifest = self.workspace_path / ".research-workspace.json"
+        return cache if manifest.is_file() else legacy
 
     @property
     def review_snapshot_dir(self) -> Path:

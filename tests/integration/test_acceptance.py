@@ -29,7 +29,8 @@ from research_kb.markdown_store import MarkdownStore
 from research_kb.zotero_client import ZoteroClient
 
 REPO_ROOT = Path(__file__).parents[2]
-DASHBOARDS_DIR = REPO_ROOT / "vault" / "Literature" / "Dashboards"
+VAULT_ASSETS = REPO_ROOT / "src" / "research_kb" / "assets" / "vault"
+DASHBOARDS_DIR = VAULT_ASSETS / "Literature" / "Dashboards"
 
 SERVER_ID = "acceptance-zotero"
 LOCAL_WRITE_KEY = "acceptance-local-write-key"
@@ -256,11 +257,14 @@ def _paper_pages(marker: str) -> tuple[str, ...]:
 def project_root(tmp_path: Path) -> Path:
     """Build a project checkout, including its nested Obsidian vault."""
     root = tmp_path / "project"
+    shutil.copytree(VAULT_ASSETS, root / "vault")
     (root / "vault" / "Literature" / "Papers").mkdir(parents=True)
-    (root / "vault" / "Literature" / "Dashboards").mkdir(parents=True)
-    for dashboard in DASHBOARDS_DIR.glob("*.base"):
-        shutil.copy(dashboard, root / "vault" / "Literature" / "Dashboards" / dashboard.name)
-    shutil.copytree(REPO_ROOT / "vault" / "System", root / "vault" / "System")
+    registry = root / "vault" / "System" / "tag-registry.md"
+    registry.write_text(
+        registry.read_text(encoding="utf-8")
+        + f"\n### `{APPROVED_TAG}`\n\nSynthetic acceptance-test tag.\n",
+        encoding="utf-8",
+    )
     (root / "references.bib").write_text("% Better BibTeX keep-updated export\n", encoding="utf-8")
     return root
 
@@ -367,6 +371,9 @@ def _dashboard_properties() -> set[str]:
     properties: set[str] = set()
     for dashboard in sorted(DASHBOARDS_DIR.glob("*.base")):
         parsed = yaml.safe_load(dashboard.read_text(encoding="utf-8"))
+        global_filters = parsed.get("filters", {}).get("and", [])
+        if 'type == "paper"' not in global_filters:
+            continue
         containers = [parsed, *parsed.get("views", [])]
         for container in containers:
             for condition in container.get("filters", {}).get("and", []):

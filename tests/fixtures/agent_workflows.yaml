@@ -1,0 +1,41 @@
+- request: "Review smithRobust2025"
+  skill: paper-review
+  evidence_mode: partial-text
+  forbidden_operations: [curation-apply, direct-note-edit]
+- request: "Review this Python module for race conditions"
+  skill: null
+  forbidden_operations: [research_context, research_submit_review]
+- request: "Compare these three papers on causal transportability"
+  skill: research-synthesis
+  required_operations: [research_search, research_context, research_save_artifact]
+  forbidden_operations: [research_submit_review, curation-apply]
+- request: "Find work missing from project robust-transfer"
+  skill: literature-discovery
+  required_operations: [research_search]
+  forbidden_operations: [library-import, curation-apply]
+- request: "Accept tag decision tag-02 in proposal proposal-7"
+  skill: curation-approval
+  required_operations: [research_list_proposals, research_preview_proposal]
+  forbidden_operations: [curation-apply, approved-boolean]
+- request: "Reassess the papers linked to project robust-transfer"
+  skill: project-curation
+  required_operations: [research_projects, research_search, research_propose_curation]
+  forbidden_operations: [direct-project-unlink, curation-apply]
+- request: "Archive project robust-transfer after reassessing its links"
+  skill: project-curation
+  required_operations: [research_projects, research_catalog_propose, research_catalog_preview]
+  forbidden_operations: [curation-apply, research-catalog-decide, direct-project-edit]
+- request: "Initialize this new research workspace"
+  skill: workspace-initialization
+  required_operations: [research_doctor, research_setup_status, research_setup_schema, research_setup_preview]
+  allowed_after_acceptance: [research_setup_apply]
+  forbidden_operations: [curation-decide, catalog-decide, zotero-write]
+- request: "Resume setting up my partially configured workspace"
+  skill: workspace-initialization
+  required_operations: [research_setup_status]
+  required_behavior: [preserve-configured-content, ask-only-for-missing-values]
+  forbidden_operations: [destructive-reset, zotero-write]
+- request: "Initialize this workspace in Cowork, but no research tools are available"
+  skill: workspace-initialization
+  required_behavior: [read-setup-schema-for-draft, install-workspace-plugin, do-not-invent-revision]
+  forbidden_operations: [workspace-launcher, source-access, computer-use, setup-apply]

@@ -16,10 +16,12 @@ from research_kb.markdown_store import (
     MarkdownStore,
     block_content,
     ensure_block,
+    read_frontmatter,
     replace_block,
 )
 from research_kb.models import PaperNote, ProjectNote
 from research_kb.project_registry import load_projects
+from research_kb.search_service import safe_file, terms
 
 NO_PAPERS = "No papers are linked to this project."
 NO_PROJECTS = "No projects are linked to this paper."
@@ -42,6 +44,8 @@ class ProjectCandidate:
     title: str
     shared_tags: tuple[str, ...]
     ai_relevance: int | None
+    matched_terms: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
 
 
 class ProjectService:
@@ -111,18 +115,34 @@ class ProjectService:
 
         return ProjectIndexReport(changed=tuple(changed), unknown=tuple(unknown), skipped=skipped)
 
-    def candidates(self, project_id: str, limit: int = 20) -> tuple[ProjectCandidate, ...]:
-        """Rank unlinked papers by controlled-tag overlap for an agent to judge."""
+    def candidates(
+        self, project_id: str, limit: int = 20, *, offset: int = 0, query: str | None = None
+    ) -> tuple[ProjectCandidate, ...]:
+        """Rank unlinked papers by tags and brief/title/abstract overlap, with pagination."""
+        if not 1 <= limit <= 100 or offset < 0:
+            raise ValueError("limit must be 1–100 and offset must be nonnegative")
         projects = {project.project_id: project for project in self.projects()}
         if project_id not in projects:
             raise ValueError(f"No project note exists for {project_id!r}.")
         project_tags = set(projects[project_id].tags)
+        path = safe_file(self.settings.projects_dir / f"{project_id}.md", self.settings.vault_path)
+        _, brief = read_frontmatter(path)
+        # Derived paper links and private free-form notes are not search terms.
+        brief = brief.split("## Related papers", 1)[0].split("## Notes", 1)[0]
+        query_terms = terms(query if query is not None else brief)
         scored = [
             ProjectCandidate(
                 citekey=note.citekey,
                 title=note.title,
                 shared_tags=tuple(sorted(project_tags.intersection(note.tags))),
                 ai_relevance=note.ai_relevance,
+                matched_terms=tuple(
+                    sorted(query_terms & terms(f"{note.title} {note.abstract or ''}"))
+                ),
+                reasons=(
+                    "Controlled-tag overlap and title/abstract matches are retrieval hints; "
+                    "inspect the project goals and scope before proposing a link.",
+                ),
             )
             for _path, note in self.papers()
             if project_id not in note.projects
@@ -130,11 +150,12 @@ class ProjectService:
         scored.sort(
             key=lambda item: (
                 -len(item.shared_tags),
+                -len(item.matched_terms),
                 -(item.ai_relevance or 0),
                 item.citekey,
             )
         )
-        return tuple(scored[:limit])
+        return tuple(scored[offset : offset + limit])
 
 
 def _render_papers(notes: list[PaperNote]) -> str:
